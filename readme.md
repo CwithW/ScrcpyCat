@@ -4,6 +4,74 @@ ScrcpyCat 是自托管的 Android 远程设备管理平台。浏览器通过 Web
 
 前端构建后嵌入 Go 可执行文件，由同一个 HTTP 服务提供网页、API 和 WebSocket。无需独立前端镜像，不包含 AI 或商业授权功能。
 
+## 界面预览
+
+桌面端设备控制:
+
+![ScrcpyCat 桌面端设备控制](docs/screenshots/main-ui.jpg)
+
+移动端设备控制(云手机):
+
+![ScrcpyCat 移动端设备控制](docs/screenshots/mobile-ui.jpg)
+
+## 部署与连接关系
+
+ScrcpyCat 控制面由嵌入式前端与 Go 后端组成，与 coturn 一同运行在服务器上。ScrcpyCat-adb-deployer 运行在可通过 ADB 访问 Android 设备的 Linux 设备上，并为每台设备选择一种 Agent 运行模式。
+
+```mermaid
+flowchart LR
+    browser["用户浏览器"]
+
+    subgraph server["服务器"]
+        controlplane["ScrcpyCat 控制面<br/>嵌入式前端 + Go 后端"]
+        coturn["coturn<br/>STUN / TURN"]
+    end
+
+    subgraph linux["Linux 设备"]
+        deployer["ScrcpyCat-adb-deployer"]
+        hostAgent["Agent<br/>host 模式"]
+    end
+
+    subgraph android["Android 设备"]
+        deviceAgent["独立 Agent<br/>device 模式"]
+        androidTarget["Android 系统与 scrcpy"]
+    end
+
+    browser -->|"HTTPS：页面与 API"| controlplane
+    deployer -->|"HTTP(S)：申请 enrollment"| controlplane
+    deployer -->|"默认：在 Linux 启动"| hostAgent
+    deployer -.->|"可选：通过 ADB 注入并启动"| deviceAgent
+    deployer -->|"ADB：发现与部署"| androidTarget
+    hostAgent -->|"ADB：采集与控制"| androidTarget
+    deviceAgent -->|"设备内运行"| androidTarget
+    hostAgent -->|"WS / WSS：注册与信令"| controlplane
+    deviceAgent -->|"WS / WSS：注册与信令"| controlplane
+```
+
+`host` 与 `device` 是二选一的 Agent 运行模式：默认由部署器在 Linux 上启动 host Agent，再由它通过 ADB 操作 Android；也可以把独立 Agent 部署到 Android 内运行。无论采用哪种模式，Agent 都会主动连接控制面。
+
+浏览器建立会话时，WebRTC 信令始终由控制面的 WebSocket 转发；协商完成后的实时数据有以下路径：
+
+```mermaid
+flowchart LR
+    browser["用户浏览器<br/>ScrcpyCat 前端"]
+    controlplane["ScrcpyCat 控制面<br/>WebSocket 中转"]
+    coturn["coturn<br/>TURN 中继"]
+    agent["Agent<br/>host 或 device 模式"]
+
+    browser <-->|"WS / WSS /connect_client<br/>认证、信令与控制面消息"| controlplane
+    controlplane <-->|"WS / WSS /register_agent<br/>注册、信令与控制面消息"| agent
+    browser <-->|"WebRTC：ICE 可直连时<br/>音视频与数据通道"| agent
+    browser <-->|"WebRTC：无法直连或强制中继"| coturn
+    coturn <-->|"TURN：音视频与数据通道"| agent
+    browser ==>|"WebSocket 模式：控制指令"| controlplane
+    controlplane ==>|"WebSocket 模式：控制指令"| agent
+    agent ==>|"WebSocket 模式：音视频帧与响应"| controlplane
+    controlplane ==>|"WebSocket 模式：音视频帧与响应"| browser
+```
+
+coturn 不是 WebRTC 的必经节点：ICE 可直连时，浏览器直接连接 Agent；直连失败或配置为仅中继时，流量才经过 coturn。WebSocket 投屏模式则确实由控制面中转：Agent 将二进制音视频帧发送到 `/register_agent`，控制面再通过浏览器的 `/connect_client` 连接转发；控制指令和相关响应也沿相反方向转发。
+
 ## 功能
 
 - 屏幕投屏、触控、按键、剪贴板、截图；支持 WebRTC 与 WebSocket 视频和音频。浏览器缺少 WebRTC 时，屏幕会话自动使用 WebSocket。
