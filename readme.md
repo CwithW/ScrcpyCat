@@ -64,7 +64,7 @@ host 采集使用前台 ADB Shell v2 和 scrcpy `cleanup=true`。ADB 会话丢�
 
 5. 手机启用 USB 调试，插入服务器，并在手机上允许该 ADB 主机。部署器自动发现在线 USB 设备。仅让部署器容器持有 USB，不同时运行宿主或 Windows ADB Server。
 
-GHCR 名称是 `ghcr.io/<owner>/<repository>:<版本>` 和 `ghcr.io/<owner>/<repository>-adb-deployer:<版本>`，仓库名转为小写。发布者需将 GHCR 包可见性设为公开，或让部署机器使用具备读取权限的账号登录。`latest` 仅随正式版本更新，预发布使用自己的版本标签。
+发布镜像为 `ghcr.io/cwithw/scrcpycat:<版本>` 和 `ghcr.io/cwithw/scrcpycat-adb-deployer:<版本>`。发布后需将 GHCR 包可见性设为公开，或让部署机器使用具备读取权限的账号登录。`latest` 仅随正式版本更新，预发布使用自己的版本标签。
 
 网页与 API 均由容器的 HTTP 8443 端口提供，Compose 默认同时映射主机 8080 和 8443，以兼容网页与 Agent 入口；端口号 8443 本身不代表已启用 TLS。公网在前面配置 HTTPS 反向代理，并允许 WebSocket 升级；相应设置 `SCRCPYCAT_PUBLIC_URL`、WSS 信令地址及 TURN 可达地址。内网 HTTP 可用，但 WebUSB 等安全上下文功能仍需 HTTPS 或 localhost。
 
