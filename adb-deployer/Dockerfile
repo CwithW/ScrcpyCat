@@ -24,6 +24,10 @@ COPY --from=build /out/scrcpycat-adb-deployer /usr/local/bin/scrcpycat-adb-deplo
 COPY --from=build /out/scrcpycat-agent /usr/local/bin/scrcpycat-agent
 COPY --from=build /out/licenses /usr/share/licenses/scrcpycat
 COPY third_party/licenses/android-tools /usr/share/licenses/android-tools
+# Keep device-mode artifacts in the published image as well as the Linux
+# host Agent, so USB deployment does not depend on host bind mounts.
+COPY bin/agent /opt/scrcpycat/agent/bin
+COPY bin/scrcpy-server /opt/scrcpycat/scrcpy
 # The native Linux backend polls the mounted USB device directory. libusb's
 # hotplug path can miss container device reattachment after a USB disconnect.
 ENV ADB_LIBUSB=0

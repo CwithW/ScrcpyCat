@@ -85,7 +85,7 @@ make build-agent-docker build-scrcpy-server
 
 `make build-controlplane` 生成 `bin/scrcpycat-controlplane`，无需旁边保留网页资源。Android 的四 ABI 构建使用 NDK 链接 Android 运行时；这不改变 host 模式及 gadb 不使用 cgo 的设计。构建目标将环境中的代理变量传给 Docker，支持 `DOCKER_PROXY_ARGS` 覆盖。
 
-构建并启动本地镜像时，使用配置样例里的本地镜像名，并将上面的 `--no-build` 换为 `--build`；Dockerfile 自行完成前端编译。Compose 通过只读目录挂载 `bin/agent` 和 `bin/scrcpy-server`，因此运行 GHCR 镜像也需要匹配版本的 Release 工件。
+构建并启动本地镜像时，设置本地镜像名并将上面的 `--no-build` 换为 `--build`；Dockerfile 自行完成前端编译。发布到 GHCR 的控制平面和 USB 部署器镜像均内置匹配版本的 Android Agent 与 scrcpy server 工件，不需要主机目录挂载或额外下载 Release 工件。
 
 开发时可以启动 Vite，它会把 API 和 WebSocket 代理到 Go：
 

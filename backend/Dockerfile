@@ -36,5 +36,9 @@ FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/scrcpycat-controlplane /usr/local/bin/scrcpycat-controlplane
 COPY --from=build --chown=65532:65532 /out/assets /var/lib/scrcpycat/assets
 COPY --from=build /out/licenses /usr/share/licenses/scrcpycat
+# Images are deployment-complete: the control plane can generate device
+# packages without requiring host-mounted Android artifacts.
+COPY --chown=65532:65532 bin/agent /opt/scrcpycat/agent
+COPY --chown=65532:65532 bin/scrcpy-server /opt/scrcpycat/scrcpy
 EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/scrcpycat-controlplane"]

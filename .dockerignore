@@ -3,6 +3,11 @@
 .agents
 .codex
 bin
+!bin/
+!bin/agent/
+!bin/agent/**
+!bin/scrcpy-server/
+!bin/scrcpy-server/**
 dist
 data
 logs

@@ -8,7 +8,7 @@ x-build-proxy: &build-proxy
 
 services:
   controlplane:
-    image: ${SCRCPYCAT_IMAGE:-scrcpycat-controlplane:latest}
+    image: ${SCRCPYCAT_IMAGE:-ghcr.io/cwithw/scrcpycat:latest}
     restart: unless-stopped
     build:
       context: ..
@@ -54,8 +54,6 @@ services:
       - "${SCRCPYCAT_CONTROLPLANE_PORT:-8443}:8443"
     volumes:
       - asset-data:/var/lib/scrcpycat/assets
-      - ../bin/agent:/opt/scrcpycat/agent:ro
-      - ../bin/scrcpy-server:/opt/scrcpycat/scrcpy:ro
 
   coturn:
     image: coturn/coturn:4.6.3
@@ -97,7 +95,7 @@ services:
       - redis-data:/data
 
   adb-deployer:
-    image: ${SCRCPYCAT_ADB_IMAGE:-scrcpycat-adb-deployer:latest}
+    image: ${SCRCPYCAT_ADB_IMAGE:-ghcr.io/cwithw/scrcpycat-adb-deployer:latest}
     profiles: ["usb"]
     network_mode: host
     restart: unless-stopped
@@ -118,8 +116,6 @@ services:
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - ${SCRCPYCAT_ADB_KEY_DIR:-adb-keys}:/root/.android
-      - ../bin/agent:/opt/scrcpycat/agent/bin:ro
-      - ../bin/scrcpy-server:/opt/scrcpycat/scrcpy:ro
       - adb-state:/var/lib/scrcpycat/adb-deployer
     device_cgroup_rules:
       - 'c 189:* rmw'
