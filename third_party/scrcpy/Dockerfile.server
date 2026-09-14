@@ -1,0 +1,47 @@
+# Reproducibly build the scrcpy v4.1 server APK used by ScrcpyCat Agent.
+# The output is intentionally an unsigned APK: scrcpy loads it via app_process.
+FROM eclipse-temurin:21-jdk-jammy AS builder
+
+ARG ANDROID_CMDLINE_TOOLS_VERSION=13114758
+ARG ANDROID_SDK_ROOT=/opt/android-sdk
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG ALL_PROXY
+ARG NO_PROXY
+ENV http_proxy=${HTTP_PROXY}
+ENV https_proxy=${HTTPS_PROXY}
+ENV all_proxy=${ALL_PROXY}
+ENV no_proxy=${NO_PROXY}
+WORKDIR /src
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl unzip \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools" \
+	&& curl -fsSLo /tmp/cmdline-tools.zip "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" \
+	&& unzip -q /tmp/cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools" \
+	&& mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest" \
+	&& rm /tmp/cmdline-tools.zip
+
+ENV ANDROID_HOME=${ANDROID_SDK_ROOT}
+ENV ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}
+ENV PATH=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}
+
+RUN yes | sdkmanager --licenses \
+	&& sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+COPY third_party/scrcpy ./
+RUN --mount=type=cache,target=/tmp/gradle,sharing=locked \
+    if [ -n "$HTTPS_PROXY" ]; then \
+        gradle_proxy_address="${HTTPS_PROXY#*://}"; \
+        gradle_proxy_address="${gradle_proxy_address##*@}"; \
+        gradle_proxy_host="${gradle_proxy_address%:*}"; \
+        gradle_proxy_port="${gradle_proxy_address##*:}"; \
+        export GRADLE_OPTS="-Dhttps.proxyHost=$gradle_proxy_host -Dhttps.proxyPort=$gradle_proxy_port -Dhttp.proxyHost=$gradle_proxy_host -Dhttp.proxyPort=$gradle_proxy_port"; \
+    fi \
+    && GRADLE_USER_HOME=/tmp/gradle ./gradlew --no-daemon --max-workers=2 -p server assembleRelease \
+	&& mkdir -p /out \
+	&& cp server/build/outputs/apk/release/server-release-unsigned.apk /out/scrcpy-server
+
+FROM scratch
+COPY --from=builder /out /

@@ -1,0 +1,6 @@
+id=scrcpycat-agent
+name=ScrcpyCat Agent
+version=0.1.0
+versionCode=1
+author=ScrcpyCat
+description=Self-hosted Android Agent with scrcpy; AI-free.

@@ -1,0 +1,184 @@
+name: Build and release
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/web-app/package-lock.json
+      - run: npm ci --no-audit --no-fund
+        working-directory: frontend/web-app
+      - run: npm test && npm run build
+        working-directory: frontend/web-app
+      - run: go test -race ./...
+      - name: Check pure Go host builds and licenses
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          go build ./backend/cmd/controlplane ./agent/cmd/agent ./adb-deployer/cmd/adb-deployer
+          go run ./tools/licenses
+          bash -n tools/release.sh
+      - name: Validate Compose configuration
+        run: docker compose --env-file deploy/.env.example -f deploy/docker-compose.yml --profile usb config --quiet
+
+  bundles:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/web-app/package-lock.json
+      - uses: docker/setup-buildx-action@v3
+      - run: make build-frontend
+      - name: Build Android Agents
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: agent/Dockerfile.build
+          outputs: type=local,dest=bin/agent
+          cache-from: type=gha,scope=android-agent
+          cache-to: type=gha,mode=max,scope=android-agent
+      - name: Build scrcpy server
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: third_party/scrcpy/Dockerfile.server
+          outputs: type=local,dest=bin/scrcpy-server
+          cache-from: type=gha,scope=scrcpy-server
+          cache-to: type=gha,mode=max,scope=scrcpy-server
+      - name: Package Linux and Android releases
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REVISION: ${{ github.sha }}
+        run: bash tools/release.sh "$RELEASE_TAG" "$RELEASE_REVISION"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: dist/release/${{ github.ref_name }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  images:
+    needs: [verify, bundles]
+    if: >-
+      always() && needs.verify.result == 'success' &&
+      (needs.bundles.result == 'success' || needs.bundles.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: controlplane
+            dockerfile: backend/Dockerfile
+            suffix: ''
+            platforms: linux/amd64,linux/arm64
+          - component: adb-deployer
+            dockerfile: adb-deployer/Dockerfile
+            suffix: '-adb-deployer'
+            platforms: linux/amd64,linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+        if: matrix.component == 'adb-deployer'
+        with:
+          platforms: arm64
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve image name
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: echo "name=ghcr.io/${REPOSITORY,,}${SUFFIX}" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ steps.image.outputs.name }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=ci,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ github.ref_name }},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build images; publish only release tags
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platforms }}
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '0.1.0-dev' }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [bundles, images]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundles
+          path: release
+      - name: Verify release checksums
+        run: sha256sum -c SHA256SUMS
+        working-directory: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          make_latest: ${{ contains(github.ref_name, '-') && 'false' || 'true' }}

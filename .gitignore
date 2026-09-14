@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+/.local/
+bin/
+dist/
+!backend/internal/webui/dist/
+backend/internal/webui/dist/*
+!backend/internal/webui/dist/.keep
+data/
+coverage/
+*.log
+frontend/web-app/node_modules/
+frontend/web-app/assets/

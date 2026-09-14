@@ -1,0 +1,11 @@
+Android Tools 35.0.2 license records (unmodified upstream files)
+
+Source archive: https://github.com/nmeum/android-tools/releases/download/35.0.2/android-tools-35.0.2.tar.xz
+SHA-512: 391ce4d638b274d7bbae24a3df8de8b5812a982570f29b2aef37d12a3ba7ed6f66b5c0b7f908759e0b0da30d152b5319af0fef16c54bdc3b9f4074fb22f80d10
+Alpine packaging and patches: https://gitlab.alpinelinux.org/alpine/aports/-/tree/3.22-stable/community/android-tools
+Alpine source archive cache: https://distfiles.alpinelinux.org/distfiles/v3.22/
+
+The image installs the Alpine android-tools binary package unchanged.
+Its package version and installed dependencies are recorded in /lib/apk/db/installed.
+This directory retains upstream project and bundled-library licenses/notices,
+including libraries used by tools other than adb in the same Alpine package.

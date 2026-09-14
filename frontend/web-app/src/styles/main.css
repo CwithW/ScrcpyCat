@@ -1,0 +1,188 @@
+:root {
+  --bg-primary: #0f0f1a;
+  --bg-secondary: #1a1a2e;
+  --bg-card: #16213e;
+  --accent: #e94560;
+  --accent-hover: #ff6b6b;
+  --text-primary: #ffffff;
+  --text-secondary: #888888;
+  --success: #00ff00;
+  --border: rgba(255, 255, 255, 0.1);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+}
+
+.btn {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: white;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+}
+
+.btn:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.btn-icon {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: white;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-icon:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* 滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--accent);
+  border-radius: 4px;
+}
+
+/* Web fullscreen mode:
+   页面全屏由 DeviceClient 根节点 (.device-panel-view.is-web-fullscreen) 直接 fixed 提权铺满屏幕，
+   不再依赖中间容器链提权，这里只需锁住 body 滚动。
+   注意：切勿在 scoped 样式中对 body.has-web-fullscreen 使用 :global() 选择器（会被错误编译）。 */
+body.has-web-fullscreen,
+body.web-fullscreen {
+  overflow: hidden !important;
+}
+
+/* 打破多机容器内的层叠上下文囚笼：
+   .multi-device-item.is-focused (z-index:2) 和 .floating-window (内联 z-index) 会创建层叠上下文，
+   把全屏层的 z-index:9000 囚禁在内，导致 multi-top-bar (z-index:10) 等兄弟层盖住全屏画面。
+   全屏时将这些中间层的 z-index 置为 auto，让全屏层直接在面板级层叠上下文中胜出。 */
+body.has-web-fullscreen .multi-device-item,
+body.has-web-fullscreen .floating-window {
+  z-index: auto !important;
+}
+/* FAB buttons shared style */
+.webfullscreen-fab,
+.pip-fab {
+  position: absolute;
+  top: 16px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 100;
+  transition: all 0.2s;
+}
+.webfullscreen-fab .icon,
+.pip-fab .icon {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.webfullscreen-fab:hover,
+.pip-fab:hover {
+  background: rgba(0, 0, 0, 0.8);
+  transform: scale(1.1);
+}
+
+/* Position: fullscreen-fab is at right:16px (PC), webfullscreen-fab next, pip-fab after */
+.webfullscreen-fab {
+  right: 60px;
+}
+.pip-fab {
+  right: 104px;
+}
+
+
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.3s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+
+.slide-enter-active,
+.slide-leave-active {
+  transition: all 0.3s ease;
+}
+
+.slide-enter-from,
+.slide-leave-to {
+  opacity: 0;
+  transform: translateY(-20px);
+}
+
+/* 彻底抑制 Edge / Chrome 浏览器自动注入的视频增强、画中画、音频翻译及悬浮工具栏 */
+video::-webkit-media-controls {
+  display: none !important;
+}
+video::-webkit-media-controls-enclosure {
+  display: none !important;
+}
+video::-webkit-media-controls-panel {
+  display: none !important;
+}
+video::-internal-media-controls-overlay-cast-button {
+  display: none !important;
+}
+video::-webkit-media-controls-overlay-play-button {
+  display: none !important;
+}
+video::-webkit-media-controls-start-playback-button {
+  display: none !important;
+}
+

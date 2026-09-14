@@ -1,0 +1,132 @@
+name: scrcpycat
+
+x-build-proxy: &build-proxy
+  http_proxy: ${http_proxy:-}
+  https_proxy: ${https_proxy:-}
+  all_proxy: ${all_proxy:-}
+  no_proxy: ${no_proxy:-}
+
+services:
+  controlplane:
+    image: ${SCRCPYCAT_IMAGE:-scrcpycat-controlplane:latest}
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+      args:
+        <<: *build-proxy
+        VERSION: ${SCRCPYCAT_VERSION:-0.1.0-dev}
+        REVISION: ${SCRCPYCAT_REVISION:-unknown}
+    environment:
+      SCRCPYCAT_LISTEN_ADDRESS: :8443
+      SCRCPYCAT_PUBLIC_URL: ${SCRCPYCAT_PUBLIC_URL:-https://localhost}
+      SCRCPYCAT_JWT_SECRET: ${SCRCPYCAT_JWT_SECRET:?set_a_long_random_secret}
+      SCRCPYCAT_ADMIN_USERNAME: ${SCRCPYCAT_ADMIN_USERNAME:-admin}
+      SCRCPYCAT_ADMIN_PASSWORD: ${SCRCPYCAT_ADMIN_PASSWORD:?set_an_initial_admin_password}
+      SCRCPYCAT_TURN_URLS: ${SCRCPYCAT_TURN_URLS:-turn:localhost:3478?transport=udp,turn:localhost:3478?transport=tcp}
+      SCRCPYCAT_TURN_USERNAME: ${SCRCPYCAT_TURN_USERNAME:?set_a_turn_username}
+      SCRCPYCAT_TURN_CREDENTIAL: ${SCRCPYCAT_TURN_CREDENTIAL:?set_a_turn_password}
+      SCRCPYCAT_CORS_ORIGINS: ${SCRCPYCAT_CORS_ORIGINS:-}
+      SCRCPYCAT_POSTGRES_DSN: postgres://scrcpycat:${SCRCPYCAT_POSTGRES_PASSWORD:?set_a_database_password}@postgres:5432/scrcpycat?sslmode=disable
+      SCRCPYCAT_REDIS_URL: redis://redis:6379/0
+      SCRCPYCAT_ASSET_DIR: /var/lib/scrcpycat/assets
+      SCRCPYCAT_AGENT_HELLO_TIMEOUT: ${SCRCPYCAT_AGENT_HELLO_TIMEOUT:-10s}
+      SCRCPYCAT_AGENT_HELLO_MAX_BYTES: ${SCRCPYCAT_AGENT_HELLO_MAX_BYTES:-65536}
+      SCRCPYCAT_MAX_PENDING_AGENT_HANDSHAKES: ${SCRCPYCAT_MAX_PENDING_AGENT_HANDSHAKES:-64}
+      SCRCPYCAT_LOGIN_ATTEMPT_WINDOW: ${SCRCPYCAT_LOGIN_ATTEMPT_WINDOW:-15m}
+      SCRCPYCAT_LOGIN_MAX_ATTEMPTS_PER_ACCOUNT: ${SCRCPYCAT_LOGIN_MAX_ATTEMPTS_PER_ACCOUNT:-10}
+      SCRCPYCAT_LOGIN_MAX_ATTEMPTS_PER_IP: ${SCRCPYCAT_LOGIN_MAX_ATTEMPTS_PER_IP:-60}
+      SCRCPYCAT_TRUSTED_PROXY_CIDRS: ${SCRCPYCAT_TRUSTED_PROXY_CIDRS:-}
+      SCRCPYCAT_AGENT_DIR: /opt/scrcpycat/agent
+      SCRCPYCAT_SCRCPY_JAR: /opt/scrcpycat/scrcpy/scrcpy-server
+      SCRCPYCAT_TASK_TTL: ${SCRCPYCAT_TASK_TTL:-24h}
+      SCRCPYCAT_AUDIT_RETENTION: ${SCRCPYCAT_AUDIT_RETENTION:-2160h}
+      SCRCPYCAT_MAX_ASSET_BYTES: ${SCRCPYCAT_MAX_ASSET_BYTES:-2147483648}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    expose:
+      - "8443"
+    ports:
+      - "${SCRCPYCAT_HTTP_PORT:-8080}:8443"
+      - "${SCRCPYCAT_CONTROLPLANE_PORT:-8443}:8443"
+    volumes:
+      - asset-data:/var/lib/scrcpycat/assets
+      - ../bin/agent:/opt/scrcpycat/agent:ro
+      - ../bin/scrcpy-server:/opt/scrcpycat/scrcpy:ro
+
+  coturn:
+    image: coturn/coturn:4.6.3
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - -n
+      - --log-file=stdout
+      - --fingerprint
+      - --lt-cred-mech
+      - --realm=${SCRCPYCAT_TURN_REALM:-scrcpycat.local}
+      - --user=${SCRCPYCAT_TURN_USERNAME:?set_a_turn_username}:${SCRCPYCAT_TURN_CREDENTIAL:?set_a_turn_password}
+      - --external-ip=${SCRCPYCAT_TURN_PUBLIC_IP:-127.0.0.1}
+      - --relay-ip=${SCRCPYCAT_TURN_RELAY_IP:-0.0.0.0}
+      - --min-port=${SCRCPYCAT_TURN_MIN_PORT:-50000}
+      - --max-port=${SCRCPYCAT_TURN_MAX_PORT:-50100}
+      - --no-cli
+      - --no-tls
+      - --no-dtls
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: scrcpycat
+      POSTGRES_USER: scrcpycat
+      POSTGRES_PASSWORD: ${SCRCPYCAT_POSTGRES_PASSWORD:?set_a_database_password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scrcpycat -d scrcpycat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+  adb-deployer:
+    image: ${SCRCPYCAT_ADB_IMAGE:-scrcpycat-adb-deployer:latest}
+    profiles: ["usb"]
+    network_mode: host
+    restart: unless-stopped
+    build:
+      context: ..
+      dockerfile: adb-deployer/Dockerfile
+      args: *build-proxy
+    environment:
+      SCRCPYCAT_DEPLOYMENT_TOKEN: ${SCRCPYCAT_DEPLOYMENT_TOKEN:-}
+      SCRCPYCAT_ADB_MODE: ${SCRCPYCAT_ADB_MODE:-host}
+      ADB_LIBUSB: ${SCRCPYCAT_ADB_LIBUSB:-0}
+    command:
+      - --artifact-dir=/opt/scrcpycat/agent/bin
+      - --scrcpy-jar=/opt/scrcpycat/scrcpy/scrcpy-server
+      - --signaling=${SCRCPYCAT_AGENT_SIGNALING_URL:?set_an_agent_signaling_url}
+      - --control-plane=${SCRCPYCAT_CONTROLPLANE_URL:?set_a_control_plane_url}
+      - --force=${SCRCPYCAT_ADB_FORCE:-false}
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb
+      - ${SCRCPYCAT_ADB_KEY_DIR:-adb-keys}:/root/.android
+      - ../bin/agent:/opt/scrcpycat/agent/bin:ro
+      - ../bin/scrcpy-server:/opt/scrcpycat/scrcpy:ro
+      - adb-state:/var/lib/scrcpycat/adb-deployer
+    device_cgroup_rules:
+      - 'c 189:* rmw'
+
+volumes:
+  adb-keys:
+  adb-state:
+  postgres-data:
+  redis-data:
+  asset-data:

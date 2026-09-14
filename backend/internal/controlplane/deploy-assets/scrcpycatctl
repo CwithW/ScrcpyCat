@@ -1,0 +1,17 @@
+#!/system/bin/sh
+MODDIR=/data/adb/modules/scrcpycat-agent
+STATE=/data/adb/scrcpycat
+case "$1" in
+  status)
+    ABI=$(getprop ro.product.cpu.abi)
+    "$MODDIR/bin/$ABI/scrcpycat-agent" --health --scrcpy-jar "$MODDIR/scrcpy-server.jar" --identity-file "$STATE/identity.json" --pid-file "$STATE/agent.pid"
+    ;;
+  restart)
+    p=$(cat "$STATE/agent.pid" 2>/dev/null)
+    case "$p" in ""|*[!0-9]*) echo "Agent is not running"; exit 1;; esac
+    [ "$(cat /proc/$p/comm 2>/dev/null)" = scrcpycat-agent ] || exit 1
+    kill "$p"
+    ;;
+  log) tail -80 "$STATE/agent.log" ;;
+  *) echo "Usage: scrcpycatctl status|restart|log"; exit 2 ;;
+esac

@@ -1,0 +1,49 @@
+ScrcpyCat
+Copyright 2026 ScrcpyCat contributors
+
+Original ScrcpyCat code and modifications are licensed under Apache-2.0.
+Third-party source and components retain their original licenses.
+
+Vendored source:
+- scrcpy 4.1: https://github.com/Genymobile/scrcpy
+  Snapshot: 2926c06c5dc3064ae6d8db706f1a98a37cfcf3f0
+  License: third_party/scrcpy/LICENSE (Apache-2.0, unchanged).
+  ScrcpyCat modifies its video/clipboard/control integration and build recipe.
+- ScrcpyOverWebRTC frontend: https://github.com/hqw700/ScrcpyOverWebRTC
+  Snapshot: 65567d777bccb11d2a6d93b6acc735478e880b5b
+  License: frontend/LICENSE (MIT).
+  The upstream README explicitly declares the web-app source MIT licensed;
+  that snapshot does not contain the linked standalone LICENSE file.
+  frontend/LICENSE records the standard MIT terms of that declaration.
+  Original declaration: "本项目前端 web-app 源代码遵循 MIT License 许可协议开源，您可以自由进行二次开发与修改。"
+  ScrcpyCat modifies branding, removes AI/commercial activation, and adapts
+  authentication, media, terminal, file and deployment functionality.
+  Upstream proprietary backend/Agent/APK binaries are not redistributed.
+- gadb 0.1.0: https://github.com/electricbubble/gadb
+  Snapshot: e2a2fccc8c86406b074c6226dbfc23ea32bee51b
+  License: third_party/gadb/LICENSE (MIT, unchanged).
+  Local modifications are documented in third_party/gadb/README.scrcpycat.md.
+
+Additional frontend license records:
+- h264decoder 1.0.0 declares ISC in its npm package metadata; no standalone
+  license file was published. third_party/licenses/h264decoder/LICENSE records
+  those terms. Its TinyH264-derived WASM retains the Apache-2.0 license at
+  third_party/licenses/tinyh264/LICENSE.
+- opus-decoder 0.7.12 and @wasm-audio-decoders/common 9.0.7 declare MIT in
+  their npm package metadata but omit standalone license files. Their MIT
+  terms are recorded in third_party/licenses/wasm-audio-decoders/LICENSE.
+  Embedded libopus retains the BSD terms in third_party/licenses/opus/LICENSE.
+- @vue/devtools-api omits LICENSE from its npm package. The upstream license
+  is retained in third_party/licenses/vue-devtools/LICENSE.
+
+The adb-deployer image installs Alpine's android-tools package, unmodified,
+for its target architecture. It retains both the native and libusb USB backends.
+Original Android Tools 35.0.2 and bundled-library licenses/notices are retained
+in third_party/licenses/android-tools, with source/archive/Alpine patch links
+and the verified source checksum in SOURCE.txt. The image also includes these
+records at /usr/share/licenses/android-tools. Alpine's installed package database
+records the actual package and dependency versions used by each image build.
+
+Builds collect remaining npm and Go module license/notice files without
+rewriting their contents. These are included in Release archives and images;
+frontend notices are also embedded at /THIRD_PARTY_LICENSES.txt.
