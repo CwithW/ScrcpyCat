@@ -13,14 +13,17 @@ type streamOptions struct {
 	Reconfigure bool
 	Preview     bool
 	PowerOff    bool
-	Bitrate     bitrateOptions
-	Audio       bool
-	Source      string
-	Values      map[string]string
+	// ForceH264Baseline preserves the browser-compatible default. A capture
+	// session may disable it once when a legacy device rejects the profile.
+	ForceH264Baseline bool
+	Bitrate           bitrateOptions
+	Audio             bool
+	Source            string
+	Values            map[string]string
 }
 
 func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error) {
-	options := streamOptions{Preview: preview, Reconfigure: preview, Source: "display", Values: map[string]string{}}
+	options := streamOptions{Preview: preview, Reconfigure: preview, ForceH264Baseline: true, Source: "display", Values: map[string]string{}}
 	options.Audio, _ = raw["audio"].(bool)
 	options.PowerOff, _ = raw["power_off"].(bool)
 	var err error
@@ -85,6 +88,37 @@ func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error)
 	return options, nil
 }
 
+func (options streamOptions) withoutH264Profile() streamOptions {
+	options.ForceH264Baseline = false
+	values := options.Values
+	options.Values = make(map[string]string, len(options.Values))
+	for key, value := range values {
+		if key == "video_codec_options" {
+			value = withoutCodecOption(value, "profile")
+			if value == "" {
+				continue
+			}
+		}
+		options.Values[key] = value
+	}
+	return options
+}
+
+func withoutCodecOption(value, name string) string {
+	parts := strings.Split(value, ",")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		key, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+		if strings.EqualFold(key, name) {
+			continue
+		}
+		if part = strings.TrimSpace(part); part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, ",")
+}
+
 func (options streamOptions) arguments() []string {
 	source := options.Source
 	if source == "" {
@@ -95,8 +129,12 @@ func (options streamOptions) arguments() []string {
 	for key, value := range options.Values {
 		values[key] = value
 	}
-	// Match the Baseline SDP and the HTTP/WASM preview decoder.
-	values["video_codec_options"] += ",profile=1"
+	if options.ForceH264Baseline {
+		// Match the Baseline SDP and the HTTP/WASM preview decoder.
+		values["video_codec_options"] += ",profile=1"
+	} else {
+		values["video_codec_options"] = withoutCodecOption(values["video_codec_options"], "profile")
+	}
 	var keys []string
 	for key := range values {
 		keys = append(keys, key)

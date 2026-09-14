@@ -17,20 +17,23 @@ import (
 )
 
 type scrcpyBridge struct {
-	device          *deviceBackend
-	config          Config
-	mu              sync.Mutex
-	process         captureProcess
-	streamCancel    context.CancelFunc
-	control         chan map[string]any
-	controlConn     net.Conn
-	onVideo         func(mediaPacket)
-	onAudio         func(mediaPacket)
-	options         streamOptions
-	processDone     chan struct{}
-	width, height   uint32
-	onDeviceMessage func(map[string]any)
-	onError         func(error)
+	device              *deviceBackend
+	config              Config
+	mu                  sync.Mutex
+	process             captureProcess
+	streamCancel        context.CancelFunc
+	control             chan map[string]any
+	controlConn         net.Conn
+	onVideo             func(mediaPacket)
+	onAudio             func(mediaPacket)
+	options             streamOptions
+	processDone         chan struct{}
+	streamParent        context.Context
+	profileFallbackUsed bool
+	mediaStarted        bool
+	width, height       uint32
+	onDeviceMessage     func(map[string]any)
+	onError             func(error)
 }
 
 func newScrcpyBridge(config Config, backends ...*deviceBackend) *scrcpyBridge {
@@ -55,6 +58,10 @@ func (b *scrcpyBridge) Start(parent context.Context, options streamOptions) erro
 			return err
 		}
 	}
+	return b.startLocked(parent, options, false)
+}
+
+func (b *scrcpyBridge) startLocked(parent context.Context, options streamOptions, profileFallbackUsed bool) error {
 	if _, err := os.Stat(b.config.ScrcpyJar); err != nil {
 		return errors.New("scrcpy server jar is missing")
 	}
@@ -72,30 +79,21 @@ func (b *scrcpyBridge) Start(parent context.Context, options streamOptions) erro
 	log.Printf("capture started: source=%s preview=%t audio=%t", options.Source, options.Preview, options.Audio)
 	done := make(chan struct{})
 	b.process, b.streamCancel, b.processDone, b.options = cmd, cancel, done, options
+	b.streamParent, b.profileFallbackUsed, b.mediaStarted = parent, profileFallbackUsed, false
 	go func() {
-		if err := b.attachVideo(streamCtx, scid, options); err != nil {
-			b.captureFailed(streamCtx, cmd, err)
+		if err := b.attachVideo(streamCtx, cmd, scid, options); err != nil && streamCtx.Err() == nil {
+			b.captureFailed(cmd, err, false)
 		}
 	}()
 	go func() {
 		err := cmd.Wait()
-		unexpected := streamCtx.Err() == nil
-		cancel()
 		close(done)
-		b.mu.Lock()
-		if b.process == cmd {
-			b.process = nil
-			b.streamCancel = nil
-			b.processDone = nil
-		}
-		publisher := b.onError
-		b.mu.Unlock()
-		if unexpected && publisher != nil {
+		if streamCtx.Err() == nil {
 			if err == nil {
 				// scrcpy may exit with status 0 after a camera configuration error.
 				err = errors.New("capture ended unexpectedly; check the selected camera or resolution")
 			}
-			publisher(fmt.Errorf("scrcpy %s capture stopped: %w", options.Source, err))
+			b.captureFailed(cmd, err, true)
 		}
 	}()
 	return nil
@@ -110,6 +108,8 @@ func (b *scrcpyBridge) Stop() error {
 func (b *scrcpyBridge) stopLocked() error {
 	process, done := b.process, b.processDone
 	b.process, b.processDone = nil, nil
+	b.streamParent = nil
+	b.mediaStarted = false
 	if b.controlConn != nil {
 		if b.device.adb == nil && b.options.PowerOff && b.options.Source != "camera" {
 			_ = b.controlConn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
@@ -172,23 +172,45 @@ func (b *scrcpyBridge) SetPreviewPublisher(publisher func(mediaPacket)) {
 	b.mu.Unlock()
 }
 
-func (b *scrcpyBridge) captureFailed(ctx context.Context, process captureProcess, err error) {
+func (b *scrcpyBridge) captureFailed(process captureProcess, err error, stopped bool) {
 	b.mu.Lock()
-	if ctx.Err() != nil || b.process != process {
+	if b.process != process {
 		b.mu.Unlock()
 		return
 	}
-	source, publisher := b.options.Source, b.onError
+	source, options, parent, publisher := b.options.Source, b.options, b.streamParent, b.onError
+	retryProfileless := b.shouldRetryProfilelessLocked(process)
 	_ = b.stopLocked()
+	if retryProfileless {
+		fmt.Fprintln(os.Stderr, "scrcpy H.264 Baseline profile rejected; retrying without profile")
+		if retryErr := b.startLocked(parent, options.withoutH264Profile(), true); retryErr == nil {
+			b.mu.Unlock()
+			return
+		} else {
+			err = fmt.Errorf("profileless retry failed: %w", retryErr)
+		}
+	}
 	b.mu.Unlock()
-	err = fmt.Errorf("scrcpy %s capture failed: %w", source, err)
+	state := "failed"
+	if stopped {
+		state = "stopped"
+	}
+	err = fmt.Errorf("scrcpy %s capture %s: %w", source, state, err)
 	fmt.Fprintln(os.Stderr, err)
 	if publisher != nil {
 		publisher(err)
 	}
 }
 
-func (b *scrcpyBridge) attachVideo(ctx context.Context, scid string, options streamOptions) error {
+func (b *scrcpyBridge) shouldRetryProfilelessLocked(process captureProcess) bool {
+	if b.profileFallbackUsed || b.mediaStarted || !b.options.ForceH264Baseline {
+		return false
+	}
+	diagnostics := process.Diagnostics()
+	return strings.Contains(diagnostics, "MediaCodec$CodecException") || strings.Contains(diagnostics, "Capture/encoding error")
+}
+
+func (b *scrcpyBridge) attachVideo(ctx context.Context, process captureProcess, scid string, options streamOptions) error {
 	connection, err := b.dialSocket(ctx, scid, "video")
 	if err != nil {
 		return err
@@ -264,6 +286,9 @@ func (b *scrcpyBridge) attachVideo(ctx context.Context, scid string, options str
 			packet.Data = append(append([]byte(nil), codecConfig...), packet.Data...)
 		}
 		b.mu.Lock()
+		if b.process == process {
+			b.mediaStarted = true
+		}
 		publisher := b.onVideo
 		b.mu.Unlock()
 		if publisher != nil {

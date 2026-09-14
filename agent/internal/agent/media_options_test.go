@@ -25,6 +25,28 @@ func TestMediaOptionsReachScrcpy(t *testing.T) {
 	}
 }
 
+func TestProfilelessOptionsRemoveEveryProfileConstraint(t *testing.T) {
+	options, err := parseStreamOptions(map[string]any{
+		"video_codec_options": "i-frame-interval=2,profile=8,level=42",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := strings.Join(options.arguments(), " ")
+	if !strings.Contains(baseline, "profile=1") {
+		t.Fatalf("Baseline profile missing from %q", baseline)
+	}
+	profileless := strings.Join(options.withoutH264Profile().arguments(), " ")
+	if strings.Contains(profileless, "profile=") {
+		t.Fatalf("profile constraint leaked into fallback: %q", profileless)
+	}
+	for _, expected := range []string{"i-frame-interval=2", "level=42"} {
+		if !strings.Contains(profileless, expected) {
+			t.Fatalf("fallback dropped %s from %q", expected, profileless)
+		}
+	}
+}
+
 func TestControlCoordinatesFollowCaptureSize(t *testing.T) {
 	event := map[string]any{"type": "touch", "action": float64(0), "id": float64(-1), "x": float64(540), "y": float64(960), "w": float64(1080), "h": float64(1920)}
 	mapped := remapControlPosition(event, 1440, 3200)

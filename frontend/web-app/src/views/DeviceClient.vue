@@ -37,12 +37,12 @@
         </div>
 
         <!-- 移动端退出按钮 (右上角) -->
-        <button v-if="isMobile" class="mobile-close-fab" @click="deviceStore.clearActiveDevice()" title="关闭连接">
+        <button v-if="isMobile && !isMobileFullscreen" class="mobile-close-fab" @click="deviceStore.clearActiveDevice()" title="关闭连接">
           ✕
         </button>
 
         <!-- 悬浮全屏按钮 (移入视频容器内，保证全屏时可见) -->
-        <button class="fullscreen-fab" @click="toggleFullscreen" title="系统全屏">
+        <button v-if="!isMobileFullscreen" class="fullscreen-fab" @click="toggleFullscreen" title="系统全屏">
           <svg class="icon" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
         </button>
 
@@ -184,7 +184,7 @@
         <div v-if="(isMobile || isFullscreen || isWebFullscreen) && showMobileMenu" class="fab-overlay" @mousedown.stop.prevent="showMobileMenu = false" @touchstart.stop.prevent="showMobileMenu = false"></div>
 
         <!-- 手机端悬浮菜单 (移入视频容器内，保证全屏时可见) -->
-        <div v-if="isMobile || isFullscreen || isWebFullscreen" class="mobile-fab-container" :style="fabStyle">
+        <div v-if="isMobile || isFullscreen || isWebFullscreen" class="mobile-fab-container" :class="{ 'is-compact': isMobileFullscreen }" :style="fabStyle">
           <button class="mobile-fab-main" :class="{ 'active': showMobileMenu }"
             @mousedown="onFabStart" @mousemove="onFabMove" @mouseup="onFabEnd" @mouseleave="onFabEnd"
             @touchstart.prevent="onFabStart" @touchmove.prevent="onFabMove" @touchend.prevent="onFabEnd">
@@ -193,6 +193,18 @@
           </button>
           
           <div class="mobile-fab-menu" :class="{ 'show': showMobileMenu, 'align-left': isFabOnLeft, 'align-top': isFabOnTop }">
+            <template v-if="isMobileFullscreen">
+              <button class="fab-item" @click="exitFullscreenFromFab">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+                退出全屏
+              </button>
+              <button class="fab-item danger" @click="closeDeviceFromFab">
+                <svg class="icon" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+                关闭连接
+              </button>
+              <div class="fab-divider"></div>
+            </template>
+
             <!-- 监控模式下的快捷悬浮菜单 -->
             <template v-if="isCameraMode">
               <div class="fab-section-title">镜头选择</div>
@@ -1244,13 +1256,14 @@ function onFabMove(e) {
     isDragging = true
   }
   if (isDragging) {
-    let left = ev.clientX - 28 // 56/2 = 28 (center)
-    let top = ev.clientY - 28
+    const size = fabSize.value
+    let left = ev.clientX - size / 2
+    let top = ev.clientY - size / 2
     
     if (left < 0) left = 0
     if (top < 0) top = 0
-    if (left > window.innerWidth - 56) left = window.innerWidth - 56
-    if (top > window.innerHeight - 56) top = window.innerHeight - 56
+    if (left > window.innerWidth - size) left = window.innerWidth - size
+    if (top > window.innerHeight - size) top = window.innerHeight - size
     
     isFabOnLeft.value = left < window.innerWidth / 2
     isFabOnTop.value = top < window.innerHeight / 2
@@ -1587,6 +1600,8 @@ let layoutInterval = null
 // 手机端和视频方向检测
 const isMobile = ref(window.innerWidth <= 1024)
 const isVideoLandscape = ref(false)
+const isMobileFullscreen = computed(() => isMobile.value && (isFullscreen.value || isWebFullscreen.value))
+const fabSize = computed(() => isMobileFullscreen.value ? 44 : 56)
 
 function updateMobileState() {
   isMobile.value = window.innerWidth <= 1024
@@ -2009,6 +2024,22 @@ function toggleFullscreen() {
   } else {
     document.exitFullscreen().catch(() => {})
   }
+}
+
+function exitFullscreenFromFab() {
+  showMobileMenu.value = false
+  if (isWebFullscreen.value) {
+    toggleWebFullscreen()
+    return
+  }
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {})
+  }
+}
+
+function closeDeviceFromFab() {
+  showMobileMenu.value = false
+  deviceStore.clearActiveDevice()
 }
 
 // 页面全屏下的悬浮 UI（右侧工具栏）自动隐藏：鼠标/触摸活动时显示，静止 2.5s 后淡出
@@ -2805,6 +2836,21 @@ function onTouchEnd(e) {
 .mobile-fab-main:active { cursor: grabbing; transform: scale(0.95); }
 .mobile-fab-main.active { background: #555; }
 
+.mobile-fab-container.is-compact {
+  width: 44px;
+  height: 44px;
+}
+
+.mobile-fab-container.is-compact .mobile-fab-main {
+  width: 44px;
+  height: 44px;
+}
+
+.mobile-fab-container.is-compact .mobile-fab-main .icon {
+  width: 20px;
+  height: 20px;
+}
+
 .mobile-fab-menu {
   position: absolute;
   bottom: 68px;
@@ -2839,6 +2885,16 @@ function onTouchEnd(e) {
   transform: translateY(-20px);
 }
 
+.mobile-fab-container.is-compact .mobile-fab-menu {
+  bottom: 54px;
+  gap: 6px;
+  padding: 8px;
+}
+
+.mobile-fab-container.is-compact .mobile-fab-menu.align-top {
+  top: 54px;
+}
+
 .mobile-fab-menu.show {
   opacity: 1;
   pointer-events: auto;
@@ -2859,6 +2915,12 @@ function onTouchEnd(e) {
   display: flex;
   align-items: center;
   width: 100%;
+}
+
+.mobile-fab-container.is-compact .fab-item {
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 13px;
 }
 
 .fab-item-wrapper {

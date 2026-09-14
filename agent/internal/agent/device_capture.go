@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	adbclient "github.com/cwithw/ScrcpyCat/internal/adb"
@@ -17,6 +18,7 @@ import (
 type captureProcess interface {
 	Wait() error
 	Close() error
+	Diagnostics() string
 }
 
 type captureTransport interface {
@@ -25,20 +27,61 @@ type captureTransport interface {
 	Probe(context.Context, Config, io.Writer) error
 }
 
-type localCapture struct{ command *exec.Cmd }
+const captureDiagnosticsLimit = 64 << 10
 
-func (p *localCapture) Wait() error  { return p.command.Wait() }
-func (p *localCapture) Close() error { return p.command.Process.Kill() }
+type captureDiagnostics struct {
+	mu     sync.Mutex
+	buffer []byte
+	limit  int
+}
+
+func (output *captureDiagnostics) Write(data []byte) (int, error) {
+	length := len(data)
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	limit := output.limit
+	if limit == 0 {
+		limit = captureDiagnosticsLimit
+	}
+	if length >= limit {
+		output.buffer = append(output.buffer[:0], data[length-limit:]...)
+		return length, nil
+	}
+	if excess := len(output.buffer) + length - limit; excess > 0 {
+		copy(output.buffer, output.buffer[excess:])
+		output.buffer = output.buffer[:len(output.buffer)-excess]
+	}
+	output.buffer = append(output.buffer, data...)
+	return length, nil
+}
+
+func (output *captureDiagnostics) String() string {
+	output.mu.Lock()
+	defer output.mu.Unlock()
+	return string(output.buffer)
+}
+
+type localCapture struct {
+	command     *exec.Cmd
+	diagnostics *captureDiagnostics
+}
+
+func (p *localCapture) Wait() error         { return p.command.Wait() }
+func (p *localCapture) Close() error        { return p.command.Process.Kill() }
+func (p *localCapture) Diagnostics() string { return p.diagnostics.String() }
 
 type adbCapture struct {
 	*adbclient.Session
 	removeStage func()
+	diagnostics *captureDiagnostics
 }
 
 func (p *adbCapture) Wait() error {
 	defer p.removeStage()
 	return p.Session.Wait()
 }
+
+func (p *adbCapture) Diagnostics() string { return p.diagnostics.String() }
 
 func captureArguments(config Config, scid string, options streamOptions, cleanup bool) []string {
 	args := []string{"/", "com.genymobile.scrcpy.Server", config.ScrcpyVersion,
@@ -51,11 +94,13 @@ func captureArguments(config Config, scid string, options streamOptions, cleanup
 func (d localDevice) Launch(_ context.Context, config Config, scid string, options streamOptions) (captureProcess, error) {
 	command := exec.Command("app_process", captureArguments(config, scid, options, false)...)
 	command.Env = append(os.Environ(), "CLASSPATH="+config.ScrcpyJar)
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	diagnostics := &captureDiagnostics{limit: captureDiagnosticsLimit}
+	output := io.MultiWriter(os.Stdout, diagnostics)
+	command.Stdout, command.Stderr = output, output
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
-	return &localCapture{command: command}, nil
+	return &localCapture{command: command, diagnostics: diagnostics}, nil
 }
 
 func (d localDevice) Dial(ctx context.Context, scid string) (net.Conn, error) {
@@ -118,12 +163,14 @@ func (d *adbDevice) Launch(ctx context.Context, config Config, scid string, opti
 	}
 	// exec is essential: Shell v2 must send SIGHUP to app_process itself, not
 	// to an intermediate shell which could leave the camera process orphaned.
-	session, err := d.client.Start(ctx, d.serial, "CLASSPATH="+adbclient.Quote(path)+" exec "+command, false, os.Stdout, os.Stderr)
+	diagnostics := &captureDiagnostics{limit: captureDiagnosticsLimit}
+	output := io.MultiWriter(os.Stdout, diagnostics)
+	session, err := d.client.Start(ctx, d.serial, "CLASSPATH="+adbclient.Quote(path)+" exec "+command, false, output, output)
 	if err != nil {
 		d.removeJar(path)
 		return nil, err
 	}
-	return &adbCapture{Session: session, removeStage: func() { d.removeJar(path) }}, nil
+	return &adbCapture{Session: session, removeStage: func() { d.removeJar(path) }, diagnostics: diagnostics}, nil
 }
 
 func (d *adbDevice) Dial(ctx context.Context, scid string) (net.Conn, error) {

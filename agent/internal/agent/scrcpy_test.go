@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -89,6 +90,7 @@ func (p *waitingCaptureProcess) Close() error {
 	p.once.Do(func() { close(p.done) })
 	return nil
 }
+func (p *waitingCaptureProcess) Diagnostics() string { return "" }
 
 type brokenCaptureTransport struct{ process *waitingCaptureProcess }
 
@@ -135,5 +137,110 @@ func TestFailedMediaHandshakeStopsForegroundCaptureAndReportsError(t *testing.T)
 	bridge.mu.Unlock()
 	if running {
 		t.Fatal("failed capture still occupies the bridge")
+	}
+}
+
+type scriptedCaptureProcess struct {
+	done        chan struct{}
+	err         error
+	diagnostics string
+	once        sync.Once
+}
+
+func (p *scriptedCaptureProcess) Wait() error { <-p.done; return p.err }
+func (p *scriptedCaptureProcess) Close() error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+func (p *scriptedCaptureProcess) Diagnostics() string { return p.diagnostics }
+
+type scriptedCaptureTransport struct {
+	processes []*scriptedCaptureProcess
+	launches  []streamOptions
+	mu        sync.Mutex
+}
+
+func (d *scriptedCaptureTransport) Launch(_ context.Context, _ Config, _ string, options streamOptions) (captureProcess, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.launches = append(d.launches, options)
+	if len(d.launches) > len(d.processes) {
+		return nil, errors.New("unexpected capture launch")
+	}
+	return d.processes[len(d.launches)-1], nil
+}
+func (d *scriptedCaptureTransport) Probe(context.Context, Config, io.Writer) error { return nil }
+func (d *scriptedCaptureTransport) Dial(context.Context, string) (net.Conn, error) {
+	return nil, errors.New("test media socket unavailable")
+}
+func (d *scriptedCaptureTransport) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.launches)
+}
+func (d *scriptedCaptureTransport) options(index int) streamOptions {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.launches[index]
+}
+
+func TestMediaCodecFailureRetriesOnceWithoutProfile(t *testing.T) {
+	jar := filepath.Join(t.TempDir(), "scrcpy-server.jar")
+	if err := os.WriteFile(jar, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	first := &scriptedCaptureProcess{done: make(chan struct{}), err: errors.New("scrcpy exited"), diagnostics: "Capture/encoding error: android.media.MediaCodec$CodecException"}
+	close(first.done)
+	second := &scriptedCaptureProcess{done: make(chan struct{})}
+	transport := &scriptedCaptureTransport{processes: []*scriptedCaptureProcess{first, second}}
+	backend := localBackend()
+	backend.capture = transport
+	bridge := newScrcpyBridge(Config{ScrcpyJar: jar}, backend)
+	t.Cleanup(func() { _ = bridge.Stop() })
+	reported := make(chan error, 1)
+	bridge.SetErrorPublisher(func(err error) { reported <- err })
+	if err := bridge.Start(context.Background(), streamOptions{Source: "display", ForceH264Baseline: true}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for transport.count() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("profileless retry did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !transport.options(0).ForceH264Baseline || transport.options(1).ForceH264Baseline {
+		t.Fatal("retry did not remove forced H.264 profile")
+	}
+	select {
+	case err := <-reported:
+		t.Fatalf("fallback reported a premature error: %v", err)
+	default:
+	}
+}
+
+func TestNonCodecFailureDoesNotRetryProfile(t *testing.T) {
+	jar := filepath.Join(t.TempDir(), "scrcpy-server.jar")
+	if err := os.WriteFile(jar, []byte("fixture"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	process := &scriptedCaptureProcess{done: make(chan struct{}), err: errors.New("network disconnected")}
+	close(process.done)
+	transport := &scriptedCaptureTransport{processes: []*scriptedCaptureProcess{process}}
+	backend := localBackend()
+	backend.capture = transport
+	bridge := newScrcpyBridge(Config{ScrcpyJar: jar}, backend)
+	reported := make(chan error, 1)
+	bridge.SetErrorPublisher(func(err error) { reported <- err })
+	if err := bridge.Start(context.Background(), streamOptions{Source: "display", ForceH264Baseline: true}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-reported:
+	case <-time.After(time.Second):
+		t.Fatal("non-codec failure was not reported")
+	}
+	if transport.count() != 1 {
+		t.Fatal("non-codec failure retried profileless capture")
 	}
 }
