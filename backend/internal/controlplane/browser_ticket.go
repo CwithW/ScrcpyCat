@@ -17,6 +17,7 @@ const (
 type browserTicketClaims struct {
 	Kind         string `json:"kind"`
 	TokenVersion uint64 `json:"token_version,omitempty"`
+	AccessToken  string `json:"access_token,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -54,7 +55,7 @@ func (s *Server) websocketTicket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	ticket, expiresAt, err := issueBrowserTicket(s.config.JWTSecret, browserAccessUser, user.ID, user.TokenVersion)
+	ticket, expiresAt, err := issueBrowserTicket(s.config.JWTSecret, browserAccessUser, user.ID, user.TokenVersion, tokenDigest(bearerToken(r.Header.Get("Authorization"))))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "issue websocket ticket")
 		return
@@ -62,12 +63,17 @@ func (s *Server) websocketTicket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ticket": ticket, "expires_at": expiresAt})
 }
 
-func issueBrowserTicket(secret []byte, kind, subject string, tokenVersion uint64) (string, time.Time, error) {
+func issueBrowserTicket(secret []byte, kind, subject string, tokenVersion uint64, accessTokens ...string) (string, time.Time, error) {
 	now := time.Now().UTC()
 	expiresAt := now.Add(browserTicketTTL)
+	accessToken := ""
+	if len(accessTokens) > 0 {
+		accessToken = accessTokens[0]
+	}
 	ticket, err := jwt.NewWithClaims(jwt.SigningMethodHS256, browserTicketClaims{
 		Kind:         kind,
 		TokenVersion: tokenVersion,
+		AccessToken:  accessToken,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   subject,
 			Audience:  jwt.ClaimStrings{browserTicketAudience},

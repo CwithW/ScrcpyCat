@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { ref, computed, shallowRef, markRaw } from 'vue'
+import { ref, computed, shallowRef, markRaw, watch } from 'vue'
+import { updateRemoteDeviceSettings } from '@/utils/settings'
 import { debugLog } from '@/utils/debug'
 import { isTaskFinished } from '@/utils/taskState'
 import { useTagStore } from './tags'
@@ -22,7 +23,7 @@ export const useDeviceStore = defineStore('devices', () => {
   // --- 顶栏共享与视图控制状态 ---
   const searchQuery = ref('')
   const cardSize = ref(Number(localStorage.getItem('cloudphone_card_size') || 200))
-  const viewMode = ref(localStorage.getItem('cloudphone_view_mode') || 'grid') // 'grid' | 'table'
+  const viewMode = ref(localStorage.getItem('cloudphone_view_mode') || 'table') // 'grid' | 'table'
   const showGlobalSettingsModal = ref(false)
   const showTagManagerModal = ref(false)
 
@@ -556,18 +557,13 @@ export const useDeviceStore = defineStore('devices', () => {
   }
 
   const previewRequests = new Map()
-  function sendPreviewControl(action, deviceId, fps, maxSize, bitrate, stayAwake) {
+  function sendPreviewControl(action, deviceId, options = {}) {
       const payload = {
+        ...options,
         message_type: action,
         type: action,
         device_id: deviceId
       }
-      if (fps !== undefined && fps > 0) payload.fps = fps
-      if (maxSize !== undefined && maxSize > 0) payload.max_size = maxSize
-      if (bitrate !== undefined && bitrate > 0) {
-        payload.bitrate = bitrate >= 10000 ? Math.round(bitrate) : Math.round(bitrate * 1000000)
-      }
-      if (stayAwake !== undefined) payload.stay_awake = stayAwake
       if (action === 'start_preview') previewRequests.set(deviceId, payload)
       else previewRequests.delete(deviceId)
       if (globalWs?.readyState === WebSocket.OPEN) globalWs.send(JSON.stringify(payload))
@@ -684,6 +680,10 @@ export const useDeviceStore = defineStore('devices', () => {
         } else if (msg.message_type === 'global_settings_updated') {
           localStorage.setItem('cloudphone_settings', JSON.stringify(msg.settings))
           window.dispatchEvent(new CustomEvent('cloudphone-settings-updated', { detail: { deviceId: '' } }))
+        } else if (msg.message_type === 'device_settings_updated') {
+          updateRemoteDeviceSettings(msg.device_id, msg.settings)
+        } else if (msg.message_type === 'error' || msg.message_type === 'capability_error' || (msg.message_type === 'device_msg' && msg.payload?.type === 'scrcpy_error')) {
+          error.value = msg.error || msg.payload?.message || '设备操作失败'
         } else if (msg.message_type === 'device_list_update') {
           updateFromList(msg.devices)
         } else if (msg.message_type === 'tags_update') {
@@ -742,7 +742,11 @@ export const useDeviceStore = defineStore('devices', () => {
   }
 
   // 全局高频预览模式状态
-  const globalPreviewMode = ref(false)
+  const globalPreviewMode = ref(localStorage.getItem('cloudphone_preview_enabled') === 'true')
+  watch(globalPreviewMode, enabled => {
+    localStorage.setItem('cloudphone_preview_enabled', String(enabled))
+    if (!enabled) globalInteractiveMode.value = false
+  })
 
   // 全局预览直控模式状态
   const globalInteractiveMode = ref(false)

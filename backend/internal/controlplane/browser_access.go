@@ -13,6 +13,7 @@ type browserAccess struct {
 	kind         string
 	subject      string
 	tokenVersion uint64
+	accessToken  string
 }
 
 const (
@@ -28,7 +29,7 @@ func (s *Server) browserAccessFromRequest(r *http.Request) (User, bool, browserA
 	if err != nil {
 		return User{}, false, browserAccess{}, err
 	}
-	return user, false, browserAccess{kind: browserAccessUser, subject: user.ID, tokenVersion: user.TokenVersion}, nil
+	return user, false, browserAccess{kind: browserAccessUser, subject: user.ID, tokenVersion: user.TokenVersion, accessToken: tokenDigest(bearerToken(r.Header.Get("Authorization")))}, nil
 }
 
 func (s *Server) browserAccessFromTicket(ticket string) (User, bool, browserAccess, error) {
@@ -36,7 +37,7 @@ func (s *Server) browserAccessFromTicket(ticket string) (User, bool, browserAcce
 	if err != nil {
 		return User{}, false, browserAccess{}, err
 	}
-	access := browserAccess{kind: claims.Kind, subject: claims.Subject, tokenVersion: claims.TokenVersion}
+	access := browserAccess{kind: claims.Kind, subject: claims.Subject, tokenVersion: claims.TokenVersion, accessToken: claims.AccessToken}
 	user, viewOnly, err := s.validateBrowserAccess(access)
 	if err != nil {
 		return User{}, false, browserAccess{}, err
@@ -47,6 +48,9 @@ func (s *Server) browserAccessFromTicket(ticket string) (User, bool, browserAcce
 func (s *Server) validateBrowserAccess(access browserAccess) (User, bool, error) {
 	switch access.kind {
 	case browserAccessUser:
+		if s.store.UserTokenRevoked(access.accessToken) {
+			return User{}, false, ErrInvalidAuth
+		}
 		user, err := s.userForToken(access.subject, access.tokenVersion)
 		return user, false, err
 	case browserAccessShare:
@@ -106,15 +110,16 @@ func (s *Server) watchBrowserAccess(access browserAccess, peer *browserPeer) fun
 	return func() { close(stop) }
 }
 
-func (s *Server) constrainedStreamOptions(user User, raw map[string]any) map[string]any {
+func (s *Server) constrainedStreamOptions(user User, deviceID string, raw map[string]any) map[string]any {
 	result := cloneMap(raw)
 	if result == nil {
 		result = map[string]any{}
 	}
-	settings := s.store.DefaultSettings()
-	if settings == nil {
-		settings = map[string]any{}
+	if user.Role != RoleAdmin {
+		delete(result, "snapshot_interval")
+		delete(result, "snapshotInterval")
 	}
+	settings := s.agentSettings(deviceID)
 	for key, value := range user.Settings {
 		settings[key] = value
 	}

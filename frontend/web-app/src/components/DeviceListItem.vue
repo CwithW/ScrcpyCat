@@ -2,7 +2,7 @@
   <div
     class="device-table-row"
     ref="rowElement"
-    :class="{ offline: device.status !== 'online' }"
+    :class="{ offline: device.status !== 'online', 'group-selecting': groupControlStore.isGroupControlActive, 'has-tags': tags.length > 0 }"
     @click="onRowClick"
   >
     <!-- 列 1：群控选择 / 主控标识 -->
@@ -13,6 +13,7 @@
           v-else
           type="checkbox"
           :checked="groupControlStore.selectedSlaveIds.includes(device.id)"
+          :aria-label="`选择设备 ${device.id}`"
           @change="groupControlStore.toggleSlave(device.id)"
           class="group-select-checkbox"
         />
@@ -23,8 +24,7 @@
     <!-- 列 2：缩略图与 Hover 浮窗预览 -->
     <div class="cell col-thumb" @mouseenter="showPopover = true" @mouseleave="showPopover = false" @click.stop="onThumbClick">
       <div class="thumb-box">
-        <img v-if="device.snapshot" :src="device.snapshot" class="thumb-img" alt="" loading="lazy" />
-        <span v-else class="thumb-placeholder">📱</span>
+        <DeviceThumbnail :device="device" />
         <span v-if="device.clientCount > 0" class="thumb-in-use-dot" title="使用中"></span>
       </div>
 
@@ -124,7 +124,7 @@
       </button>
 
       <button 
-        class="action-btn icon-action" 
+        class="action-btn icon-action multi-action"
         @click="onAddToMulti" 
         v-if="device.status === 'online'"
         title="加入多机直连"
@@ -133,7 +133,7 @@
       </button>
 
       <button 
-        class="action-btn icon-action" 
+        class="action-btn icon-action settings-action"
         @click="onSettings"
         title="连接设置"
       >
@@ -141,7 +141,7 @@
       </button>
 
       <!-- 更多操作菜单按钮 -->
-      <button class="action-btn icon-action more-btn" @click.stop="toggleMenu" title="更多操作">
+      <button ref="menuButton" class="action-btn icon-action more-btn" @click.stop="toggleMenu" title="更多操作" :aria-expanded="showMenu" aria-haspopup="menu">
         <svg viewBox="0 0 16 16" fill="currentColor">
           <circle cx="4" cy="8" r="1.5"/>
           <circle cx="8" cy="8" r="1.5"/>
@@ -151,7 +151,9 @@
     </div>
 
     <!-- 下拉菜单 -->
-    <div v-if="showMenu" class="item-menu" @click.stop>
+    <Teleport to="body">
+    <div v-if="showMenu" ref="menuElement" class="item-menu" :style="menuPosition" role="menu" @click.stop>
+      <button class="menu-item mobile-multi-action" @click.stop="onAddToMulti" v-if="device.status === 'online'">加入多机直连</button>
       <button class="menu-item" @click.stop="onWebSocketMirror" v-if="device.status === 'online'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
         WebSocket 投屏
@@ -168,25 +170,27 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
         分享设备 / 卡密
       </button>
-      <button class="menu-item" @click="onEditTags">
+      <button v-if="authStore.isAdmin" class="menu-item" @click="onEditTags">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12v7a1 1 0 0 1-1 1h-7L4 12V5a1 1 0 0 1 1-1h7l8 8z"></path><circle cx="8.5" cy="8.5" r="1.5"></circle></svg>
         编辑标签
       </button>
-      <button class="menu-item danger" @click="onQuitAgent" :disabled="device.status !== 'online'">
+      <button v-if="authStore.isAdmin" class="menu-item danger" @click="onQuitAgent" :disabled="device.status !== 'online'">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v6M12 4.5a6 6 0 11-8 0"/></svg>
         退出 Agent
       </button>
-      <button v-if="device.status !== 'online'" class="menu-item danger" @click="onDeleteRecord">
+      <button v-if="authStore.isAdmin && device.status !== 'online'" class="menu-item danger" @click="onDeleteRecord">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         移除记录
       </button>
     </div>
     <div v-if="showMenu" class="menu-overlay" @click.stop="showMenu = false"></div>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import DeviceThumbnail from './DeviceThumbnail.vue'
 import { useDeviceStore } from '@/stores/devices'
 import { useGroupControlStore } from '@/stores/groupControl'
 import { useAuthStore } from '@/stores/auth'
@@ -202,6 +206,9 @@ const deviceStore = useDeviceStore()
 const groupControlStore = useGroupControlStore()
 const authStore = useAuthStore()
 const showMenu = ref(false)
+const menuButton = ref(null)
+const menuElement = ref(null)
+const menuPosition = ref({ left: '0px', top: '0px', visibility: 'hidden' })
 const showPopover = ref(false)
 const rowElement = ref(null)
 
@@ -284,7 +291,31 @@ function onAddToMulti() {
   deviceStore.openDevice(props.device.id)
 }
 
-function toggleMenu() { showMenu.value = !showMenu.value }
+async function toggleMenu() {
+  showMenu.value = !showMenu.value
+  if (!showMenu.value) return
+  menuPosition.value = { left: '0px', top: '0px', visibility: 'hidden' }
+  await nextTick()
+  if (!showMenu.value || !menuButton.value || !menuElement.value) return
+  const anchor = menuButton.value.getBoundingClientRect()
+  const menu = menuElement.value.getBoundingClientRect()
+  const gap = 6
+  const left = Math.max(8, Math.min(anchor.right - menu.width, window.innerWidth - menu.width - 8))
+  const below = anchor.bottom + gap
+  const top = below + menu.height <= window.innerHeight - 8 ? below : Math.max(8, anchor.top - menu.height - gap)
+  menuPosition.value = { left: `${left}px`, top: `${top}px` }
+}
+
+function closeMenuOnViewportChange(event) {
+  if (!menuElement.value?.contains(event.target)) showMenu.value = false
+}
+
+function closeMenuOnEscape(event) {
+  if (event.key === 'Escape' && showMenu.value) {
+    showMenu.value = false
+    menuButton.value?.focus()
+  }
+}
 
 function onWebSocketMirror() {
   showMenu.value = false
@@ -338,14 +369,25 @@ function onClickOutside(event) {
   if (rowElement.value && !rowElement.value.contains(event.target)) showMenu.value = false
 }
 
-onMounted(() => document.addEventListener('click', onClickOutside))
-onUnmounted(() => document.removeEventListener('click', onClickOutside))
+onMounted(() => {
+  document.addEventListener('click', onClickOutside)
+  window.addEventListener('scroll', closeMenuOnViewportChange, true)
+  window.addEventListener('resize', closeMenuOnViewportChange)
+  document.addEventListener('keydown', closeMenuOnEscape)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', onClickOutside)
+  window.removeEventListener('scroll', closeMenuOnViewportChange, true)
+  window.removeEventListener('resize', closeMenuOnViewportChange)
+  document.removeEventListener('keydown', closeMenuOnEscape)
+})
 </script>
 
 <style scoped>
 .device-table-row {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--device-table-columns);
   align-items: center;
   padding: 6px 12px;
   background: var(--bg-card, #161b22);
@@ -374,6 +416,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
   padding: 0 6px;
   box-sizing: border-box;
   overflow: hidden;
+  min-width: 0;
 }
 
 /* 列宽分配 */
@@ -553,6 +596,8 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 
 .model-text {
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .model-text.muted {
@@ -562,6 +607,7 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 .res-text {
   font-size: 10px;
   opacity: 0.6;
+  flex-shrink: 0;
 }
 
 .col-status {
@@ -793,15 +839,16 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 
 /* 下拉菜单 */
 .item-menu {
-  position: absolute;
-  top: 36px;
-  right: 12px;
+  position: fixed;
   min-width: 140px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   background: #161b22;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.15));
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
-  z-index: 100;
+  z-index: 10021;
   padding: 4px;
 }
 
@@ -841,15 +888,57 @@ onUnmounted(() => document.removeEventListener('click', onClickOutside))
 .menu-overlay {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  z-index: 10020;
+}
+
+.mobile-multi-action { display: none; }
+
+@media (max-width: 1200px) {
+  .col-metrics { display: none; }
 }
 
 @media (max-width: 1024px) {
-  .col-metrics, .col-tags {
+  .col-tags {
     display: none;
   }
-  .col-device {
-    flex: 1;
+}
+
+/* 窄屏保留设备信息与常用操作，次要操作通过菜单访问。 */
+@media (max-width: 640px) {
+  .device-table-row {
+    grid-template-columns: 36px minmax(0, 1fr) 48px 92px;
+    grid-template-areas: "thumb device device actions" "thumb clients status actions";
+    gap: 4px 6px;
+    padding: 8px;
+    min-height: 76px;
   }
+  .device-table-row.has-tags {
+    grid-template-areas: "thumb device device actions" "thumb clients status actions" "thumb tags tags actions";
+  }
+  .cell { padding: 0; }
+  .col-select { display: none; grid-area: thumb; }
+  .group-selecting .col-select { display: flex; min-height: 44px; }
+  .group-selecting .col-thumb { display: none; }
+  .group-select-wrap { display: flex; align-items: center; justify-content: center; min-width: 36px; min-height: 44px; }
+  .group-select-checkbox { width: 22px; height: 22px; }
+  .col-thumb { grid-area: thumb; }
+  .thumb-box { width: 34px; height: 48px; }
+  .thumb-popover { display: none; }
+  .col-device { grid-area: device; }
+  .device-primary { flex-wrap: wrap; gap: 2px 4px; }
+  .device-id-text { max-width: 100%; }
+  .res-text { display: none; }
+  .col-status { grid-area: status; align-items: flex-end; }
+  .last-seen-sub { display: none; }
+  .col-clients { grid-area: clients; }
+  .client-active-pill { padding: 1px 4px; }
+  .col-tags { grid-area: tags; display: none; }
+  .has-tags .col-tags { display: flex; }
+  .col-actions { grid-area: actions; gap: 4px; align-self: stretch; }
+  .action-btn { min-width: 44px; height: 44px; padding: 0 6px; font-size: 12px; }
+  .icon-action svg { width: 18px; height: 18px; }
+  .multi-action, .settings-action { display: none; }
+  .mobile-multi-action { display: flex; }
+  .menu-item { min-height: 44px; font-size: 14px; }
 }
 </style>

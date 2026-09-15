@@ -36,11 +36,13 @@ type persistedState struct {
 	Enrollments           map[string]Enrollment                 `json:"enrollments"`
 	AgentCredentials      map[string]AgentCredential            `json:"agent_credentials"`
 	DefaultSettings       map[string]any                        `json:"default_settings"`
+	DeviceSettings        map[string]map[string]any             `json:"device_settings,omitempty"`
 	Shortcuts             map[string][]Shortcut                 `json:"shortcuts"`
 	Assets                map[string]Asset                      `json:"assets"`
 	AssetsByName          map[string]string                     `json:"assets_by_name"`
 	Tasks                 map[string]Task                       `json:"tasks"`
 	Audits                []AuditEvent                          `json:"audits"`
+	RevokedUserTokens     map[string]time.Time                  `json:"revoked_user_tokens,omitempty"`
 }
 
 // persistedUser is intentionally separate from the API model. User.PasswordHash
@@ -140,11 +142,13 @@ func (s *PostgresStore) load(ctx context.Context, adminUsername, adminPassword s
 	s.inner.enrollments = nonNil(state.Enrollments)
 	s.inner.agentCredentials = nonNil(state.AgentCredentials)
 	s.inner.defaultSettings = nonNil(state.DefaultSettings)
+	s.inner.deviceSettings = nonNil(state.DeviceSettings)
 	s.inner.shortcuts = nonNil(state.Shortcuts)
 	s.inner.assets = nonNil(state.Assets)
 	s.inner.assetsByName = nonNil(state.AssetsByName)
 	s.inner.tasks = nonNil(state.Tasks)
 	s.inner.audits = state.Audits
+	s.inner.revokedUserTokens = nonNil(state.RevokedUserTokens)
 	s.inner.mu.Unlock()
 	if repaired {
 		return s.persist()
@@ -172,8 +176,9 @@ func (s *PostgresStore) snapshotJSON() ([]byte, error) {
 		DeploymentCredentials: s.inner.deploymentCredentials,
 		Enrollments:           s.inner.enrollments, AgentCredentials: s.inner.agentCredentials,
 		DefaultSettings: s.inner.defaultSettings, Shortcuts: s.inner.shortcuts,
-		Assets: s.inner.assets, AssetsByName: s.inner.assetsByName, Tasks: s.inner.tasks,
-		Audits: s.inner.audits,
+		DeviceSettings: s.inner.deviceSettings,
+		Assets:         s.inner.assets, AssetsByName: s.inner.assetsByName, Tasks: s.inner.tasks,
+		Audits: s.inner.audits, RevokedUserTokens: s.inner.revokedUserTokens,
 	})
 }
 

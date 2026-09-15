@@ -184,38 +184,34 @@ func (d *scriptedCaptureTransport) options(index int) streamOptions {
 	return d.launches[index]
 }
 
-func TestMediaCodecFailureRetriesOnceWithoutProfile(t *testing.T) {
+func TestCompatibleProfileDoesNotRestartAfterCodecFailure(t *testing.T) {
 	jar := filepath.Join(t.TempDir(), "scrcpy-server.jar")
 	if err := os.WriteFile(jar, []byte("fixture"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	first := &scriptedCaptureProcess{done: make(chan struct{}), err: errors.New("scrcpy exited"), diagnostics: "Capture/encoding error: android.media.MediaCodec$CodecException"}
 	close(first.done)
-	second := &scriptedCaptureProcess{done: make(chan struct{})}
-	transport := &scriptedCaptureTransport{processes: []*scriptedCaptureProcess{first, second}}
+	transport := &scriptedCaptureTransport{processes: []*scriptedCaptureProcess{first}}
 	backend := localBackend()
 	backend.capture = transport
 	bridge := newScrcpyBridge(Config{ScrcpyJar: jar}, backend)
 	t.Cleanup(func() { _ = bridge.Stop() })
 	reported := make(chan error, 1)
 	bridge.SetErrorPublisher(func(err error) { reported <- err })
-	if err := bridge.Start(context.Background(), streamOptions{Source: "display", ForceH264Baseline: true}); err != nil {
+	options, err := parseStreamOptions(nil, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(time.Second)
-	for transport.count() < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("profileless retry did not start")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !transport.options(0).ForceH264Baseline || transport.options(1).ForceH264Baseline {
-		t.Fatal("retry did not remove forced H.264 profile")
+	if err := bridge.Start(context.Background(), options); err != nil {
+		t.Fatal(err)
 	}
 	select {
-	case err := <-reported:
-		t.Fatalf("fallback reported a premature error: %v", err)
-	default:
+	case <-reported:
+	case <-time.After(time.Second):
+		t.Fatal("encoder failure was not reported")
+	}
+	if transport.count() != 1 || strings.Contains(strings.Join(transport.options(0).arguments(), " "), "profile=") {
+		t.Fatal("compatible capture must start once without a forced profile")
 	}
 }
 
@@ -232,7 +228,7 @@ func TestNonCodecFailureDoesNotRetryProfile(t *testing.T) {
 	bridge := newScrcpyBridge(Config{ScrcpyJar: jar}, backend)
 	reported := make(chan error, 1)
 	bridge.SetErrorPublisher(func(err error) { reported <- err })
-	if err := bridge.Start(context.Background(), streamOptions{Source: "display", ForceH264Baseline: true}); err != nil {
+	if err := bridge.Start(context.Background(), streamOptions{Source: "display"}); err != nil {
 		t.Fatal(err)
 	}
 	select {

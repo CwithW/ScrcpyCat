@@ -31,6 +31,7 @@ func issueUserToken(secret []byte, user User) (string, error) {
 		TokenVersion: user.TokenVersion,
 		TokenUse:     userTokenUse,
 		RegisteredClaims: jwt.RegisteredClaims{
+			ID:        randomID(),
 			Subject:   user.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now().UTC()),
 			ExpiresAt: jwt.NewNumericDate(time.Now().UTC().Add(userTokenTTL)),
@@ -78,7 +79,7 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) userFromRequest(r *http.Request) (User, error) {
 	token := bearerToken(r.Header.Get("Authorization"))
-	if token == "" {
+	if token == "" || s.store.UserTokenRevoked(tokenDigest(token)) {
 		return User{}, ErrInvalidAuth
 	}
 	parsed, err := parseUserToken(s.config.JWTSecret, token)

@@ -97,6 +97,17 @@
           <div v-if="activeTab === 'preview' && showPreviewTab" class="tab-pane">
             <div class="form-group-divider">高频实时预览</div>
 
+            <div class="form-group form-group-row">
+              <div class="group-info">
+                <label>预览时保持设备唤醒</label>
+                <small class="hint">预览期间防止设备自动休眠，默认关闭</small>
+              </div>
+              <div class="toggle-switch">
+                <input type="checkbox" id="preview-stayawake-toggle" v-model="localSettings.previewStayAwake" />
+                <label for="preview-stayawake-toggle"></label>
+              </div>
+            </div>
+
             <div class="form-group">
               <label>预览分辨率限制 (Preview Max Size)</label>
               <input type="number" v-model.number="localSettings.previewSize" min="0" step="10" />
@@ -225,11 +236,11 @@
 
             <div class="form-group form-group-row">
               <div class="group-info">
-                <label>保持设备唤醒</label>
-                <small class="hint">连接与预览期间防止设备自动进入休眠熄屏</small>
+                <label>连接时保持设备唤醒</label>
+                <small class="hint">连接期间防止设备自动休眠，默认开启；断开后恢复正常休眠</small>
               </div>
               <div class="toggle-switch">
-                <input type="checkbox" id="stayawake-toggle" v-model="localSettings.stayAwake" />
+                <input type="checkbox" id="stayawake-toggle" v-model="localSettings.connectionStayAwake" />
                 <label for="stayawake-toggle"></label>
               </div>
             </div>
@@ -260,7 +271,7 @@
               <div class="group-info">
                 <label>开启摄像头注入</label>
                 <small class="hint" v-if="cameraSupport">获取浏览器摄像头并透传给云手机</small>
-                <small class="hint" v-else style="color: #f85149;">⚠️ 该虚拟机未部署 Camera HAL，不支持摄像头透传</small>
+                <small class="hint" v-else>当前 Agent 尚不支持浏览器摄像头透传</small>
               </div>
               <div class="toggle-switch">
                 <input type="checkbox" id="camera-toggle" v-model="localSettings.camera" :disabled="!cameraSupport" />
@@ -309,7 +320,7 @@ const props = defineProps({
   },
   cameraSupport: {
     type: Boolean,
-    default: true
+    default: false
   },
   // 被锁定的设置分区（'bitrate' | 'fps' | 'size' | 'audio'），
   // 用于分享访客场景：对应控件置灰，值以分享者配置为准

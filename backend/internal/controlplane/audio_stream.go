@@ -25,7 +25,7 @@ func (s *Server) startBrowserAudio(peer *browserPeer, deviceID string, message m
 		return
 	}
 	message["audio"] = true
-	options := s.constrainedStreamOptions(peer.user, message)
+	options := s.constrainedStreamOptions(peer.user, deviceID, message)
 	if options["audio"] != true {
 		fail("管理员已关闭音频并锁定设置")
 		return

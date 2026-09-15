@@ -16,7 +16,7 @@ export const defaultSettings = {
   powerOff: false,
   connectionPath: 'auto',
   ipPreference: 'auto',
-  showStats: true,
+  showStats: false,
   videoCodecOptions: '',
   camera: false,
   previewFps: 10,
@@ -24,7 +24,8 @@ export const defaultSettings = {
   previewDecoder: 'wasm',
   previewBitrate: 1,
   renderEngine: 'video',
-  stayAwake: false,
+  connectionStayAwake: true,
+  previewStayAwake: false,
   videoSource: 'display',
   cameraFacing: 'back',
   cameraId: '',
@@ -34,7 +35,10 @@ export const defaultSettings = {
   cameraAr: ''
 }
 
-function parseSettings(parsed) {
+export function parseSettings(value) {
+  const parsed = value && typeof value === 'object' && !Array.isArray(value) ? { ...value } : {}
+  // 拆分后的两个开关独立采用新默认值，旧的合并开关不再覆盖它们。
+  delete parsed.stayAwake
   const hasAudioDup = Object.prototype.hasOwnProperty.call(parsed, 'audioDup')
   if (parsed.bitrate > 1000) {
     parsed.bitrate = Math.max(0.1, Math.round(parsed.bitrate / 100000) / 10)
@@ -44,32 +48,7 @@ function parseSettings(parsed) {
   if (parsed.previewBitrate > 1000) {
     parsed.previewBitrate = Math.max(1, Math.round(parsed.previewBitrate / 1000000))
   }
-  if (parsed.audioGain === undefined) parsed.audioGain = defaultSettings.audioGain
-  if (parsed.audioSource === undefined) parsed.audioSource = defaultSettings.audioSource
   if (!hasAudioDup && parsed.audioSource === 'output') parsed.audioSource = defaultSettings.audioSource
-  if (parsed.audioDup === undefined) parsed.audioDup = defaultSettings.audioDup
-  if (parsed.pageAudioMuted === undefined) parsed.pageAudioMuted = defaultSettings.pageAudioMuted
-  if (parsed.debug === undefined) parsed.debug = defaultSettings.debug
-  if (parsed.snapshotInterval === undefined) parsed.snapshotInterval = defaultSettings.snapshotInterval
-  if (parsed.powerOff === undefined) parsed.powerOff = defaultSettings.powerOff
-  if (parsed.connectionPath === undefined) parsed.connectionPath = defaultSettings.connectionPath
-  if (parsed.ipPreference === undefined) parsed.ipPreference = defaultSettings.ipPreference
-  if (parsed.showStats === undefined) parsed.showStats = defaultSettings.showStats
-  if (parsed.videoCodecOptions === undefined) parsed.videoCodecOptions = defaultSettings.videoCodecOptions
-  if (parsed.camera === undefined) parsed.camera = defaultSettings.camera
-  if (parsed.previewFps === undefined) parsed.previewFps = defaultSettings.previewFps
-  if (parsed.previewSize === undefined) parsed.previewSize = defaultSettings.previewSize
-  if (parsed.previewDecoder === undefined) parsed.previewDecoder = defaultSettings.previewDecoder
-  if (parsed.previewBitrate === undefined) parsed.previewBitrate = defaultSettings.previewBitrate
-  if (parsed.renderEngine === undefined) parsed.renderEngine = defaultSettings.renderEngine
-  if (parsed.stayAwake === undefined) parsed.stayAwake = defaultSettings.stayAwake
-  if (parsed.videoSource === undefined) parsed.videoSource = defaultSettings.videoSource
-  if (parsed.cameraFacing === undefined) parsed.cameraFacing = defaultSettings.cameraFacing
-  if (parsed.cameraId === undefined) parsed.cameraId = defaultSettings.cameraId
-  if (parsed.cameraSize === undefined) parsed.cameraSize = defaultSettings.cameraSize
-  if (parsed.cameraFps === undefined) parsed.cameraFps = defaultSettings.cameraFps
-  if (parsed.cameraHighSpeed === undefined) parsed.cameraHighSpeed = defaultSettings.cameraHighSpeed
-  if (parsed.cameraAr === undefined) parsed.cameraAr = defaultSettings.cameraAr
   return parsed
 }
 
@@ -87,8 +66,11 @@ export function getDeviceSettings(deviceId) {
   if (!deviceId) return globalSettings
 
   try {
+    const remote = JSON.parse(localStorage.getItem('cloudphone_device_defaults') || '{}')
+    globalSettings = { ...globalSettings, ...parseSettings(remote[deviceId]) }
     const storedDev = localStorage.getItem(`cloudphone_settings_${deviceId}`)
-    if (storedDev) {
+    const serverManaged = localStorage.getItem('auth_role') === 'admin' && Object.keys(remote[deviceId] || {}).length > 0
+    if (storedDev && !serverManaged) {
       const devSettings = { ...globalSettings, ...parseSettings(JSON.parse(storedDev)) }
       // 默认持久化配置中视频源恒为屏幕 display，避免单机配置残留导致卡片误连摄像头
       devSettings.videoSource = 'display'
@@ -99,16 +81,50 @@ export function getDeviceSettings(deviceId) {
   return globalSettings
 }
 
-export function saveDeviceSettings(deviceId, newSettings) {
+function settingsHeaders() {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('auth_token') || ''}` }
+}
+
+export function updateRemoteDeviceSettings(deviceId, settings, notify = true) {
+  let remote = {}
+  try { remote = JSON.parse(localStorage.getItem('cloudphone_device_defaults') || '{}') } catch {}
+  if (settings && Object.keys(settings).length) remote[deviceId] = settings
+  else {
+    delete remote[deviceId]
+    if (localStorage.getItem('auth_role') === 'admin') localStorage.removeItem(`cloudphone_settings_${deviceId}`)
+  }
+  localStorage.setItem('cloudphone_device_defaults', JSON.stringify(remote))
+  if (notify) window.dispatchEvent(new CustomEvent('cloudphone-settings-updated', { detail: { deviceId } }))
+}
+
+export async function loadRemoteDeviceSettings() {
+  const response = await fetch('/api/device_settings', { headers: settingsHeaders() })
+  if (!response.ok) throw new Error('无法读取设备设置')
+  const remote = await response.json()
+  if (localStorage.getItem('auth_role') === 'admin') {
+    let previous = {}
+    try { previous = JSON.parse(localStorage.getItem('cloudphone_device_defaults') || '{}') } catch {}
+    // 其他浏览器恢复默认后，删除该设备以前同步过的本地副本。
+    for (const deviceId of Object.keys(previous || {})) {
+      if (!Object.prototype.hasOwnProperty.call(remote, deviceId)) localStorage.removeItem(`cloudphone_settings_${deviceId}`)
+    }
+  }
+  localStorage.setItem('cloudphone_device_defaults', JSON.stringify(remote))
+  window.dispatchEvent(new CustomEvent('cloudphone-settings-updated', { detail: { deviceId: '' } }))
+}
+
+export async function saveDeviceSettings(deviceId, newSettings) {
   // 持久化存储时，视频源始终默认为 display（相机镜头/分辨率等参数完整保留），仅由运行时意图动态激活 camera
-  const settingsToStore = { ...newSettings, videoSource: 'display' }
+  const settingsToStore = { ...parseSettings(newSettings), videoSource: 'display' }
+  if (!deviceId || localStorage.getItem('auth_role') === 'admin') {
+    const response = await fetch(deviceId ? `/api/devices/${encodeURIComponent(deviceId)}/settings` : '/api/default_settings', {
+      method: 'POST', headers: settingsHeaders(), body: JSON.stringify(settingsToStore)
+    })
+    if (!response.ok) throw new Error(`保存设置失败 (${response.status})`)
+    if (deviceId) updateRemoteDeviceSettings(deviceId, settingsToStore, false)
+  }
   if (!deviceId) {
     localStorage.setItem('cloudphone_settings', JSON.stringify(settingsToStore))
-    fetch('/api/default_settings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settingsToStore)
-    }).catch(err => console.warn('Failed to sync global settings to server:', err))
   } else {
     localStorage.setItem(`cloudphone_settings_${deviceId}`, JSON.stringify(settingsToStore))
   }
@@ -119,13 +135,63 @@ export function saveDeviceSettings(deviceId, newSettings) {
 
 export function hasCustomSettings(deviceId) {
   if (!deviceId) return false
-  return localStorage.getItem(`cloudphone_settings_${deviceId}`) !== null
+  if (localStorage.getItem(`cloudphone_settings_${deviceId}`) !== null) return true
+  if (localStorage.getItem('auth_role') === 'admin') {
+    try {
+      const remote = JSON.parse(localStorage.getItem('cloudphone_device_defaults') || '{}')
+      return Object.keys(remote[deviceId] || {}).length > 0
+    } catch {}
+  }
+  return false
 }
 
-export function deleteDeviceSettings(deviceId) {
+export async function deleteDeviceSettings(deviceId) {
   if (deviceId) {
+    if (localStorage.getItem('auth_role') === 'admin') {
+      const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/settings`, { method: 'DELETE', headers: settingsHeaders() })
+      if (!response.ok) throw new Error(`恢复设备设置失败 (${response.status})`)
+      updateRemoteDeviceSettings(deviceId, {}, false)
+    }
     localStorage.removeItem(`cloudphone_settings_${deviceId}`)
     localStorage.removeItem(`cloudphone_camera_pref_${deviceId}`)
+    window.dispatchEvent(new CustomEvent('cloudphone-settings-updated', { detail: { deviceId } }))
+  }
+}
+
+// 所有连接入口共用参数映射，避免 WebSocket、分享页与主控页各自遗漏选项。
+export function buildStreamOptions(settings, { preview = false } = {}) {
+  const s = { ...defaultSettings, ...parseSettings(settings) }
+  return {
+    preview,
+    max_fps: preview ? s.previewFps : s.fps,
+    max_size: preview ? s.previewSize : s.size,
+    bitrate: (preview ? s.previewBitrate : s.bitrate) * 1000000,
+    min_bitrate: s.minBitrate * 1000000,
+    max_bitrate: s.maxBitrate * 1000000,
+    bwe: preview ? false : s.bwe,
+    audio: preview ? false : s.audio,
+    audio_gain: s.audioGain,
+    audio_source: s.audioSource,
+    audio_dup: s.audioDup,
+    audio_low_latency: s.audioLowLatency,
+    debug: s.debug,
+    snapshot_interval: s.snapshotInterval,
+    power_off: preview ? false : s.powerOff,
+    video_codec_options: s.videoCodecOptions,
+    camera: s.camera,
+    stay_awake: preview ? s.previewStayAwake : s.connectionStayAwake,
+    video_source: preview ? 'display' : s.videoSource,
+    camera_facing: s.cameraFacing,
+    camera_id: s.cameraId,
+    camera_size: s.cameraSize,
+    camera_fps: s.cameraFps,
+    camera_high_speed: s.cameraHighSpeed,
+    camera_ar: s.cameraAr,
+    camera_zoom: s.cameraZoomRatio ?? 1,
+    camera_orientation: s.cameraOrientation ?? 'auto',
+    connectionPath: s.connectionPath,
+    ipPreference: s.ipPreference,
+    renderEngine: s.renderEngine
   }
 }
 

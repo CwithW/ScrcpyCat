@@ -8,6 +8,8 @@
  * 4. 彻底规避 HTML5 <video> 标签内部的 4 级跨线程/跨进程 IPC 调度与 JitterBuffer 队列堆叠，手感与流畅度 100% 对标原生 scrcpy (SDL2)。
  */
 
+import { parseAnnexB, h264CodecString } from './h264.js'
+
 export class WebCodecsRenderer {
   constructor(canvasElement, options = {}) {
     this.canvas = canvasElement
@@ -67,17 +69,8 @@ export class WebCodecsRenderer {
       }
     })
 
-    // 默认配置 H.264 Constrained Baseline / Main (零延迟优化)
-    try {
-      this.decoder.configure({
-        codec: "avc1.42002a", // H.264 Baseline Level 4.2
-        optimizeForLatency: true,
-        hardwareAcceleration: "prefer-hardware"
-      })
-      this.codecConfigured = true
-    } catch (e) {
-      console.warn("[WebCodecs] Initial configure fallback:", e)
-    }
+    this.codecConfigured = false
+    this.codec = null
   }
 
   start(receiver) {
@@ -116,6 +109,16 @@ export class WebCodecsRenderer {
 
         // value 为 RTCEncodedVideoFrame
         const isKey = value.type === "key"
+
+        if (isKey) {
+          const sps = parseAnnexB(new Uint8Array(value.data)).find(nalu => (nalu[0] & 31) === 7)
+          const codec = h264CodecString(sps)
+          if (codec && (!this.codecConfigured || codec !== this.codec)) {
+            this.decoder.configure({ codec, optimizeForLatency: true, hardwareAcceleration: 'prefer-hardware' })
+            this.codec = codec
+            this.codecConfigured = true
+          }
+        }
 
         // 若尚未成功配置，等待首个 IDR 关键帧
         if (!this.codecConfigured && !isKey) {

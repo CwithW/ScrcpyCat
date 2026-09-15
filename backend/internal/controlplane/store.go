@@ -40,6 +40,8 @@ type Store interface {
 	UpdateUser(string, func(*User) error) (User, error)
 	RenameUser(string, string) (User, error)
 	ResetPassword(string, string) error
+	RevokeUserToken(string, time.Time) error
+	UserTokenRevoked(string) bool
 	CreateShare(string, string, string, string, bool, *time.Time) (Share, error)
 	Share(string) (Share, error)
 	UpdateShare(string, func(*Share) error) (Share, error)
@@ -51,6 +53,8 @@ type Store interface {
 	ReplaceTags([]Tag, map[string][]string)
 	DefaultSettings() map[string]any
 	SetDefaultSettings(map[string]any)
+	DeviceSettings(string) map[string]any
+	SetDeviceSettings(string, map[string]any) error
 	DeploymentCredentials() []DeploymentCredential
 	CreateDeploymentCredential(string, string, time.Duration) (DeploymentCredential, string, error)
 	RevokeDeploymentCredential(string, string) (DeploymentCredential, error)
@@ -89,16 +93,20 @@ type MemoryStore struct {
 	enrollments           map[string]Enrollment
 	agentCredentials      map[string]AgentCredential
 	defaultSettings       map[string]any
+	deviceSettings        map[string]map[string]any
 	shortcuts             map[string][]Shortcut
 	assets                map[string]Asset
 	assetsByName          map[string]string
 	tasks                 map[string]Task
 	audits                []AuditEvent
 	healthErr             error
+	revokedUserTokens     map[string]time.Time
 }
 
 func NewMemoryStore(adminUsername, adminPassword string) (*MemoryStore, error) {
 	store := &MemoryStore{
+		revokedUserTokens:     make(map[string]time.Time),
+		deviceSettings:        make(map[string]map[string]any),
 		users:                 make(map[string]User),
 		usersByName:           make(map[string]string),
 		devices:               make(map[string]Device),
@@ -109,11 +117,14 @@ func NewMemoryStore(adminUsername, adminPassword string) (*MemoryStore, error) {
 		enrollments:           make(map[string]Enrollment),
 		agentCredentials:      make(map[string]AgentCredential),
 		defaultSettings: map[string]any{
-			"maxBitrate": 4,
-			"minBitrate": 1,
-			"fps":        30,
-			"size":       1080,
-			"bitrate":    4,
+			"connectionStayAwake": true,
+			"previewStayAwake":    false,
+			"showStats":           false,
+			"maxBitrate":          4,
+			"minBitrate":          1,
+			"fps":                 30,
+			"size":                1080,
+			"bitrate":             4,
 		},
 		shortcuts:    make(map[string][]Shortcut),
 		assets:       make(map[string]Asset),
@@ -264,6 +275,7 @@ func (s *MemoryStore) DeleteOfflineDevice(id string) error {
 	}
 	delete(s.devices, id)
 	delete(s.deviceTags, id)
+	delete(s.deviceSettings, id)
 	return nil
 }
 
@@ -752,6 +764,11 @@ func (s *MemoryStore) auditLocked(event AuditEvent) {
 func (s *MemoryStore) Clean(before time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for digest, expires := range s.revokedUserTokens {
+		if !time.Now().Before(expires) {
+			delete(s.revokedUserTokens, digest)
+		}
+	}
 	for digest, enrollment := range s.enrollments {
 		if !time.Now().UTC().Before(enrollment.ExpiresAt) {
 			delete(s.enrollments, digest)

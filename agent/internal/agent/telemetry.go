@@ -75,7 +75,7 @@ func collectMetrics(ctx context.Context, previous metricSample, backend *deviceB
 	ctx, cancelMetrics := context.WithTimeout(ctx, 4*time.Second)
 	defer cancelMetrics()
 	current := metricSample{at: time.Now()}
-	metrics := map[string]any{"timestamp": current.at.UTC().Format(time.RFC3339)}
+	metrics := map[string]any{"timestamp": current.at.UTC().Format(time.RFC3339), "network_speed_unit": "KiB/s"}
 	if raw, err := backend.metrics.ReadMetric(ctx, "/proc/stat"); err == nil {
 		current.cpuTotal, current.cpuIdle = cpuCounters(string(raw))
 		if previous.cpuTotal > 0 && current.cpuTotal > previous.cpuTotal && current.cpuIdle >= previous.cpuIdle {
@@ -104,8 +104,9 @@ func collectMetrics(ctx context.Context, previous metricSample, backend *deviceB
 		current.received, current.sent = networkCounters(string(raw))
 		elapsed := current.at.Sub(previous.at).Seconds()
 		if !previous.at.IsZero() && elapsed > 0 && current.received >= previous.received && current.sent >= previous.sent {
-			metrics["download_speed"] = float64(current.received-previous.received) / elapsed
-			metrics["upload_speed"] = float64(current.sent-previous.sent) / elapsed
+			// The frontend metrics contract uses KiB/s, like memory uses bytes.
+			metrics["download_speed"] = float64(current.received-previous.received) / elapsed / 1024
+			metrics["upload_speed"] = float64(current.sent-previous.sent) / elapsed / 1024
 		}
 	}
 	batteryCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -151,7 +152,7 @@ func (c *client) reportTelemetry(ctx context.Context, writer *lockedWriter, medi
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	previous := metricSample{}
-	nextSnapshot, nextMetrics := time.Now(), time.Now()
+	lastSnapshot, nextMetrics := time.Time{}, time.Now()
 	for {
 		select {
 		case <-ctx.Done():
@@ -165,10 +166,10 @@ func (c *client) reportTelemetry(ctx context.Context, writer *lockedWriter, medi
 			nextMetrics = time.Now().Add(5 * time.Second)
 		}
 		interval := c.snapshotInterval.Load()
-		if interval < 0 || time.Now().Before(nextSnapshot) || media.HasSessions() || c.previewActive.Load() {
+		if interval < 0 || time.Since(lastSnapshot) < time.Duration(max(interval, 1))*time.Second || media.HasSessions() || c.previewActive.Load() {
 			continue
 		}
-		nextSnapshot = time.Now().Add(time.Duration(max(interval, 1)) * time.Second)
+		lastSnapshot = time.Now()
 		captureCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		output := boundedOutput{limit: 32 << 20}
 		err := c.device().commands.Execute(captureCtx, "screencap", []string{"-p"}, &output, nil)
@@ -185,7 +186,11 @@ func (c *client) reportTelemetry(ctx context.Context, writer *lockedWriter, medi
 }
 
 func (c *client) setSnapshotInterval(settings map[string]any) {
-	if interval, ok := settings["snapshotInterval"].(float64); ok && interval >= -1 && interval <= 3600 {
+	value, present := settings["snapshotInterval"]
+	if !present {
+		value = settings["snapshot_interval"]
+	}
+	if interval, ok := value.(float64); ok && interval >= -1 && interval <= 3600 && interval == float64(int64(interval)) {
 		c.snapshotInterval.Store(int64(interval))
 	}
 }

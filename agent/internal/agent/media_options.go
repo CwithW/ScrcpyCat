@@ -13,19 +13,30 @@ type streamOptions struct {
 	Reconfigure bool
 	Preview     bool
 	PowerOff    bool
-	// ForceH264Baseline preserves the browser-compatible default. A capture
-	// session may disable it once when a legacy device rejects the profile.
-	ForceH264Baseline bool
-	Bitrate           bitrateOptions
-	Audio             bool
-	Source            string
-	Values            map[string]string
+	Debug       bool
+	Bitrate     bitrateOptions
+	Audio       bool
+	Source      string
+	Values      map[string]string
 }
 
 func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error) {
-	options := streamOptions{Preview: preview, Reconfigure: preview, ForceH264Baseline: true, Source: "display", Values: map[string]string{}}
+	if value, ok := raw["preview"].(bool); ok {
+		preview = value
+	}
+	options := streamOptions{Preview: preview, Reconfigure: true, Source: "display", Values: map[string]string{}}
 	options.Audio, _ = raw["audio"].(bool)
 	options.PowerOff, _ = raw["power_off"].(bool)
+	options.Debug, _ = raw["debug"].(bool)
+	awake := !preview
+	if value, ok := raw["stay_awake"].(bool); ok {
+		awake = value
+	}
+	// stay_awake changes a persistent Android setting via scrcpy cleanup and
+	// only works while charging. keep_active follows the capture lifecycle,
+	// also works on battery, and works with local mode's cleanup=false.
+	options.Values["keep_active"] = strconv.FormatBool(awake)
+	options.Values["power_on"] = strconv.FormatBool(!preview || awake)
 	var err error
 	options.Bitrate, err = parseBitrateOptions(raw)
 	if err != nil {
@@ -37,7 +48,7 @@ func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error)
 		}
 		options.Source = source
 	}
-	numeric := map[string]int{"max_fps": 240, "fps": 240, "max_size": 8192, "bitrate": 100000000, "camera_fps": 240}
+	numeric := map[string]int{"max_fps": 240, "max_size": 8192, "camera_fps": 240}
 	for key, maximum := range numeric {
 		if _, ok := raw[key]; !ok {
 			continue
@@ -47,16 +58,19 @@ func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error)
 			return options, fmt.Errorf("invalid %s", key)
 		}
 		name := key
-		if key == "bitrate" {
-			name = "video_bit_rate"
-		}
-		if key == "fps" {
-			name = "max_fps"
-		}
 		options.Values[name] = strconv.FormatUint(uint64(value), 10)
 	}
+	if _, explicit := raw["max_fps"]; !explicit {
+		if _, ok := raw["fps"]; ok {
+			value, err := uint32Field(raw, "fps")
+			if err != nil || value > 240 {
+				return options, errors.New("invalid fps")
+			}
+			options.Values["max_fps"] = strconv.FormatUint(uint64(value), 10)
+		}
+	}
 	options.Values["video_bit_rate"] = strconv.Itoa(options.Bitrate.Initial)
-	for _, key := range []string{"stay_awake", "audio_dup", "camera_high_speed"} {
+	for _, key := range []string{"audio_dup", "camera_high_speed"} {
 		if value, ok := raw[key].(bool); ok {
 			options.Values[key] = strconv.FormatBool(value)
 		}
@@ -78,6 +92,14 @@ func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error)
 		}
 		options.Values["camera_zoom"] = strconv.FormatFloat(value, 'f', -1, 64)
 	}
+	if orientation := stringField(raw, "camera_orientation"); orientation != "" && orientation != "auto" {
+		switch orientation {
+		case "0", "90", "180", "270":
+			options.Values["capture_orientation"] = orientation
+		default:
+			return options, errors.New("invalid camera_orientation")
+		}
+	}
 	if options.Values["audio_dup"] == "true" && options.Values["audio_source"] == "" {
 		options.Values["audio_source"] = "playback"
 	}
@@ -86,37 +108,6 @@ func parseStreamOptions(raw map[string]any, preview bool) (streamOptions, error)
 		delete(options.Values, "audio_dup")
 	}
 	return options, nil
-}
-
-func (options streamOptions) withoutH264Profile() streamOptions {
-	options.ForceH264Baseline = false
-	values := options.Values
-	options.Values = make(map[string]string, len(options.Values))
-	for key, value := range values {
-		if key == "video_codec_options" {
-			value = withoutCodecOption(value, "profile")
-			if value == "" {
-				continue
-			}
-		}
-		options.Values[key] = value
-	}
-	return options
-}
-
-func withoutCodecOption(value, name string) string {
-	parts := strings.Split(value, ",")
-	kept := make([]string, 0, len(parts))
-	for _, part := range parts {
-		key, _, _ := strings.Cut(strings.TrimSpace(part), "=")
-		if strings.EqualFold(key, name) {
-			continue
-		}
-		if part = strings.TrimSpace(part); part != "" {
-			kept = append(kept, part)
-		}
-	}
-	return strings.Join(kept, ",")
 }
 
 func (options streamOptions) arguments() []string {
@@ -129,12 +120,8 @@ func (options streamOptions) arguments() []string {
 	for key, value := range options.Values {
 		values[key] = value
 	}
-	if options.ForceH264Baseline {
-		// Match the Baseline SDP and the HTTP/WASM preview decoder.
-		values["video_codec_options"] += ",profile=1"
-	} else {
-		values["video_codec_options"] = withoutCodecOption(values["video_codec_options"], "profile")
-	}
+	// Let MediaCodec choose its compatible profile on the first launch. The
+	// actual SPS is used for WebRTC negotiation and browser decoder setup.
 	var keys []string
 	for key := range values {
 		keys = append(keys, key)

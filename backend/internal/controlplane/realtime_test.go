@@ -163,14 +163,19 @@ func TestFileGatewayAndTrustedSessionPermissions(t *testing.T) {
 	}
 }
 
-func TestLastGlobalPreviewSubscriberIsStopped(t *testing.T) {
+func TestRemovedPreviewSubscriberReconcilesRemainingSubscribers(t *testing.T) {
 	hub := newRealtimeHub()
 	hub.addBrowser(&browserPeer{id: "first"})
 	hub.addBrowser(&browserPeer{id: "second"})
 	hub.subscribePreview("first", "device")
 	hub.subscribePreview("second", "device")
-	if stopped := hub.removeBrowser("first"); len(stopped) != 0 {
+	hub.setPreviewRequest("first", "device", map[string]any{"preview": false, "stay_awake": true})
+	hub.setPreviewRequest("second", "device", map[string]any{"preview": true, "stay_awake": false})
+	if stopped := hub.removeBrowser("first"); len(stopped) != 1 || stopped[0] != "device" {
 		t.Fatal(stopped)
+	}
+	if remaining := hub.selectedPreviewRequest("device"); remaining["preview"] != true || remaining["stay_awake"] != false {
+		t.Fatal("foreground settings leaked into remaining preview", remaining)
 	}
 	if stopped := hub.removeBrowser("second"); len(stopped) != 1 || stopped[0] != "device" {
 		t.Fatal(stopped)

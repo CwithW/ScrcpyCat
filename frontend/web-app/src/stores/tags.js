@@ -38,6 +38,8 @@ export const useTagStore = defineStore('deviceTags', () => {
   const tags = ref([])
   const deviceTags = ref({})
   const selectedTagIds = ref([])
+  const syncError = ref('')
+  let saved = { tags: [], deviceTags: {} }
 
   const tagMap = computed(() => {
     const map = new Map()
@@ -48,6 +50,7 @@ export const useTagStore = defineStore('deviceTags', () => {
   })
 
   function persist() {
+    saved = JSON.parse(JSON.stringify({ tags: tags.value, deviceTags: deviceTags.value }))
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       tags: tags.value,
       deviceTags: deviceTags.value
@@ -84,6 +87,7 @@ export const useTagStore = defineStore('deviceTags', () => {
 
       tags.value = normalizedTags
       deviceTags.value = normalizedDeviceTags
+      saved = JSON.parse(JSON.stringify({ tags: tags.value, deviceTags: deviceTags.value }))
     } catch (e) {
       tags.value = []
       deviceTags.value = {}
@@ -112,7 +116,7 @@ export const useTagStore = defineStore('deviceTags', () => {
   }
 
   async function saveAndSync() {
-    persist()
+    syncError.value = ''
 
     try {
       const token = localStorage.getItem('auth_token') || ''
@@ -128,10 +132,18 @@ export const useTagStore = defineStore('deviceTags', () => {
         })
       })
       if (!res.ok) {
-        console.error('[Tags] Failed to save tags:', res.statusText)
+        throw new Error(`标签保存失败 (${res.status})`)
       }
+      const data = await res.json()
+      tags.value = data.tags || []
+      deviceTags.value = data.deviceTags || data.device_tags || {}
+      persist()
+      return true
     } catch (e) {
-      console.error('[Tags] Failed to sync tags to server:', e)
+      tags.value = JSON.parse(JSON.stringify(saved.tags))
+      deviceTags.value = JSON.parse(JSON.stringify(saved.deviceTags))
+      syncError.value = e.message || '标签保存失败，请重试'
+      return false
     }
   }
 
@@ -157,8 +169,7 @@ export const useTagStore = defineStore('deviceTags', () => {
       color: normalizeColor(color)
     }
     tags.value.push(tag)
-    await saveAndSync()
-    return tag
+    return await saveAndSync() ? tag : null
   }
 
   async function updateTag(id, updates) {
@@ -170,8 +181,7 @@ export const useTagStore = defineStore('deviceTags', () => {
 
     tag.name = name
     tag.color = normalizeColor(updates?.color ?? tag.color)
-    await saveAndSync()
-    return true
+    return saveAndSync()
   }
 
   async function deleteTag(id) {
@@ -210,7 +220,6 @@ export const useTagStore = defineStore('deviceTags', () => {
     }
 
     deviceTags.value = nextDeviceTags
-    persist()
   }
 
   async function setDeviceTags(deviceId, tagIds) {
@@ -254,6 +263,7 @@ export const useTagStore = defineStore('deviceTags', () => {
   // load() - 移去初始化时立即执行，改由 App.vue 中在 isLoggedIn 确定时触发
 
   return {
+    syncError,
     tags,
     deviceTags,
     selectedTagIds,

@@ -30,8 +30,8 @@ func TestBitrateLimitsAndBrowserControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(stream.arguments(), " "), "video_codec_options=bitrate-mode=2,profile=8,profile=1") {
-		t.Fatal("Baseline compatibility was overridden")
+	if !strings.Contains(strings.Join(stream.arguments(), " "), "video_codec_options=bitrate-mode=2,profile=8") {
+		t.Fatal("explicit encoder options were overridden")
 	}
 }
 

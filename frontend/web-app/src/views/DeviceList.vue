@@ -104,8 +104,7 @@
               <span class="mh-item-name">离线设备</span>
               <span class="mh-item-count">{{ deviceStore.offlineDevices.length }}</span>
             </button>
-            <!-- 非 admin 的标签管理入口 -->
-            <template v-if="!authStore.isAdmin">
+            <template v-if="authStore.isAdmin">
               <div class="mh-panel-divider"></div>
               <button class="mh-panel-item" @click="openTagManager('full'); closeMobileMenus()">标签管理</button>
             </template>
@@ -844,24 +843,37 @@ function closeSettings() {
   selectedDeviceId.value = ''
 }
 
-function saveSettings(newSettings) {
+async function saveSettings(newSettings) {
+  // 弹窗关闭会清空选中项；异步保存完成后仍连接本次操作的设备。
+  const deviceId = selectedDeviceId.value
+  try {
+    await saveDeviceSettings(deviceId, newSettings)
+  } catch (err) {
+    alert(err.message)
+    return
+  }
   localSettings.value = newSettings
-  saveDeviceSettings(selectedDeviceId.value, newSettings)
   
-  if (selectedDeviceId.value) {
-    connectDevice(selectedDeviceId.value)
+  if (deviceId) {
+    connectDevice(deviceId)
   }
   closeSettings()
 }
 
-function resetSettings() {
+async function resetSettings() {
   if (selectedDeviceId.value) {
-    deleteDeviceSettings(selectedDeviceId.value)
+    try {
+      await deleteDeviceSettings(selectedDeviceId.value)
+    } catch (err) {
+      alert(err.message)
+      return
+    }
     closeSettings()
   }
 }
 
 function openTagManager(type, deviceId = '') {
+  if (!authStore.isAdmin) return
   if (type === 'full') {
     tagManagerMode.value = 'full'
     tagManagerDevices.value = deviceStore.devices
@@ -1299,6 +1311,7 @@ function connectDevice(deviceId) {
 
 /* 高密运维数据表格 */
 .device-table-container {
+  --device-table-columns: 36px 46px minmax(120px, 1.5fr) 82px minmax(80px, 1fr) 130px minmax(70px, 1fr) 145px;
   background: var(--bg-secondary, #161b22);
   border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
   border-radius: 12px;
@@ -1308,7 +1321,8 @@ function connectDevice(deviceId) {
 }
 
 .device-table-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--device-table-columns);
   align-items: center;
   padding: 8px 12px;
   background: rgba(13, 17, 23, 0.85);
@@ -1326,6 +1340,24 @@ function connectDevice(deviceId) {
   padding: 0 6px;
   box-sizing: border-box;
   overflow: hidden;
+  min-width: 0;
+}
+
+.th.col-actions { justify-content: flex-end; }
+
+@media (max-width: 1200px) {
+  .device-table-container { --device-table-columns: 36px 46px minmax(120px, 1.5fr) 82px minmax(80px, 1fr) minmax(70px, 1fr) 145px; }
+  .th.col-metrics { display: none; }
+}
+
+@media (max-width: 1024px) {
+  .device-table-container { --device-table-columns: 36px 46px minmax(100px, 1.5fr) 82px minmax(70px, 1fr) 145px; }
+  .th.col-tags { display: none; }
+}
+
+@media (max-width: 640px) {
+  .device-table-header { display: none; }
+  .device-table-container { border-radius: 8px; }
 }
 
 .th.sortable {

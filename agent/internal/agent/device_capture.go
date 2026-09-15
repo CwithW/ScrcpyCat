@@ -84,8 +84,12 @@ func (p *adbCapture) Wait() error {
 func (p *adbCapture) Diagnostics() string { return p.diagnostics.String() }
 
 func captureArguments(config Config, scid string, options streamOptions, cleanup bool) []string {
+	level := "info"
+	if options.Debug {
+		level = "debug"
+	}
 	args := []string{"/", "com.genymobile.scrcpy.Server", config.ScrcpyVersion,
-		"scid=" + scid, "log_level=info", "tunnel_forward=true", fmt.Sprintf("cleanup=%t", cleanup),
+		"scid=" + scid, "log_level=" + level, "tunnel_forward=true", fmt.Sprintf("cleanup=%t", cleanup),
 		"control=true", "video_codec=h264", "audio_codec=opus",
 		"send_frame_meta=true", "send_device_meta=true", "send_stream_meta=true"}
 	return append(args, options.arguments()...)

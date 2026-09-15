@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ type webRTCSession struct {
 	withVideo         bool
 	withAudio         bool
 	bitrate           bitrateOptions
+	captureOptions    streamOptions
+	order             uint64
 	targetBitrate     int
 	pendingCandidates []webrtc.ICECandidateInit
 }
@@ -44,15 +47,14 @@ type webRTCManager struct {
 	lastBitrateUpdate   time.Time
 	currentBitrate      int
 	sessions            map[string]webRTCSession
+	videoProfile        string
+	nextOrder           uint64
+	onSessionClosed     func()
 }
 
 func newWebRTCManager(writer *lockedWriter, onInput func(map[string]any) error, terminals *terminalManager) *webRTCManager {
 	track, _ := webrtc.NewTrackLocalStaticRTP(
-		webrtc.RTPCodecCapability{
-			MimeType:    webrtc.MimeTypeH264,
-			ClockRate:   h264ClockRate,
-			SDPFmtpLine: "packetization-mode=1;profile-level-id=42e01f",
-		},
+		h264Codec("42e01f"),
 		"video",
 		"scrcpycat",
 	)
@@ -72,8 +74,40 @@ func newWebRTCManager(writer *lockedWriter, onInput func(map[string]any) error, 
 			rtp.NewRandomSequencer(),
 			h264ClockRate,
 		),
-		sessions: make(map[string]webRTCSession),
+		sessions:     make(map[string]webRTCSession),
+		videoProfile: "42e01f",
 	}
+}
+
+func h264Codec(profile string) webrtc.RTPCodecCapability {
+	return webrtc.RTPCodecCapability{
+		MimeType: webrtc.MimeTypeH264, ClockRate: h264ClockRate,
+		SDPFmtpLine:  "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=" + profile,
+		RTCPFeedback: []webrtc.RTCPFeedback{{Type: "nack"}, {Type: "nack", Parameter: "pli"}, {Type: "goog-remb"}},
+	}
+}
+
+func (m *webRTCManager) SetVideoCodec(profile string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if profile == m.videoProfile {
+		return nil
+	}
+	for _, session := range m.sessions {
+		if session.withVideo {
+			// Level may change with resolution; SPS carries it in-band and the
+			// negotiated H.264 capability allows asymmetric levels.
+			if len(profile) == 6 && len(m.videoProfile) == 6 && profile[:4] == m.videoProfile[:4] {
+				return nil
+			}
+			return fmt.Errorf("encoder profile changed; reconnect the existing viewers first")
+		}
+	}
+	track, err := webrtc.NewTrackLocalStaticRTP(h264Codec(profile), "video", "scrcpycat")
+	if err == nil {
+		m.track, m.videoProfile = track, profile
+	}
+	return err
 }
 
 func (m *webRTCManager) SetICEServers(raw any) {
@@ -120,6 +154,7 @@ func (m *webRTCManager) createOffer(clientID string, rawPermissions any, payload
 		return nil
 	}
 	configuration := webrtc.Configuration{ICEServers: append([]webrtc.ICEServer(nil), m.iceServers...)}
+	profile := m.videoProfile
 	m.mu.Unlock()
 
 	bitrate, err := parseBitrateOptions(options)
@@ -129,7 +164,11 @@ func (m *webRTCManager) createOffer(clientID string, rawPermissions any, payload
 	if !withVideo {
 		bitrate.Enabled = false
 	}
-	peer, estimator, err := newMediaPeer(configuration, bitrate, stringField(payload, "ip_preference"))
+	capture, err := parseStreamOptions(options, false)
+	if err != nil {
+		return err
+	}
+	peer, estimator, err := newMediaPeer(configuration, bitrate, stringField(payload, "ip_preference"), profile)
 	if err != nil {
 		return err
 	}
@@ -258,7 +297,8 @@ func (m *webRTCManager) createOffer(clientID string, rawPermissions any, payload
 	if !canControl {
 		clipboard = nil
 	}
-	m.sessions[clientID] = webRTCSession{clientID: clientID, peer: peer, clipboard: clipboard, withVideo: withVideo, withAudio: withAudio, bitrate: bitrate, targetBitrate: bitrate.Initial}
+	m.nextOrder++
+	m.sessions[clientID] = webRTCSession{clientID: clientID, peer: peer, clipboard: clipboard, withVideo: withVideo, withAudio: withAudio, bitrate: bitrate, targetBitrate: bitrate.Initial, captureOptions: capture, order: m.nextOrder}
 	m.mu.Unlock()
 	if estimator != nil {
 		estimator.OnTargetBitrateChange(func(target int) { m.updateBitrate(clientID, peer, target) })
@@ -360,7 +400,61 @@ func (m *webRTCManager) removeSession(clientID string, peer *webrtc.PeerConnecti
 			m.terminals.CloseClient(clientID)
 		}
 		go peer.Close()
+		if m.onSessionClosed != nil {
+			m.onSessionClosed()
+		}
 	}
+}
+
+func (m *webRTCManager) LatestVideoOptions() (streamOptions, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var latest webRTCSession
+	for _, session := range m.sessions {
+		if session.withVideo && session.order > latest.order {
+			latest = session
+		}
+	}
+	options := latest.captureOptions
+	options.Values = cloneStringMap(options.Values)
+	return options, latest.withVideo
+}
+
+// Viewers share one encoder. A new viewer must not turn off the audio or
+// activity refresh still requested by an existing video session.
+func (m *webRTCManager) mergeCaptureNeeds(options streamOptions) streamOptions {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var audio webRTCSession
+	for _, session := range m.sessions {
+		if !session.withVideo {
+			continue
+		}
+		if session.captureOptions.Values["keep_active"] == "true" {
+			options.Values["keep_active"] = "true"
+		}
+		if session.withAudio && session.order > audio.order {
+			audio = session
+		}
+	}
+	if !options.Audio && audio.withAudio {
+		options.Audio = true
+		for _, key := range []string{"audio_source", "audio_dup"} {
+			delete(options.Values, key)
+			if value := audio.captureOptions.Values[key]; value != "" {
+				options.Values[key] = value
+			}
+		}
+	}
+	return options
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }
 
 func (m *webRTCManager) requestKeyframe() {

@@ -38,9 +38,16 @@ func parseBitrateOptions(raw map[string]any) (bitrateOptions, error) {
 	return options, nil
 }
 
-func newMediaPeer(configuration webrtc.Configuration, options bitrateOptions, preference string) (*webrtc.PeerConnection, cc.BandwidthEstimator, error) {
+func newMediaPeer(configuration webrtc.Configuration, options bitrateOptions, preference string, profiles ...string) (*webrtc.PeerConnection, cc.BandwidthEstimator, error) {
 	engine := &webrtc.MediaEngine{}
-	if err := engine.RegisterDefaultCodecs(); err != nil {
+	profile := "42e01f"
+	if len(profiles) > 0 {
+		profile = profiles[0]
+	}
+	if err := engine.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: h264Codec(profile), PayloadType: h264PayloadType}, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, nil, err
+	}
+	if err := engine.RegisterCodec(webrtc.RTPCodecParameters{RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}, PayloadType: 111}, webrtc.RTPCodecTypeAudio); err != nil {
 		return nil, nil, err
 	}
 	registry := &interceptor.Registry{}

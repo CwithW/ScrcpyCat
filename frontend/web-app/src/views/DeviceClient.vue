@@ -641,7 +641,7 @@ import { isWebRTCAvailable, WEBRTC_UNAVAILABLE_MESSAGE } from '@/utils/webrtc'
 import { isWebSocketAudioAvailable } from '@/utils/websocketAudio'
 import { useKeymapStore } from '@/stores/keymap'
 import { KeymapEngine } from '@/utils/keymapEngine'
-import { getDeviceSettings, saveDeviceSettings, hasCustomSettings, deleteDeviceSettings, applyPolicyToSettings, policyLockedSections, getCameraPreferences, saveCameraPreferences } from '@/utils/settings'
+import { getDeviceSettings, saveDeviceSettings, hasCustomSettings, deleteDeviceSettings, applyPolicyToSettings, policyLockedSections, getCameraPreferences, saveCameraPreferences, buildStreamOptions } from '@/utils/settings'
 import { useAuthStore } from '@/stores/auth'
 import { useGroupControlStore } from '@/stores/groupControl'
 import ConnectionStatus from '@/components/ConnectionStatus.vue'
@@ -786,7 +786,7 @@ const clipboardText = ref('')
 const showClipboardText = ref(false)
 let clipboardReadRequested = false
 const showSettingsModal = ref(false)
-const cameraSupport = ref(true)
+const cameraSupport = ref(false)
 
 // 用户级设置管控：管理员配置的锁定项（码率/帧率/分辨率/音频）在 UI 置灰，服务端同步强制
 const authStore = useAuthStore()
@@ -818,36 +818,7 @@ if (!authStore.userPolicy && authStore.token) {
   })
 }
 
-const scrcpyOptions = computed(() => {
-  return {
-    max_fps: localSettings.value.fps,
-    max_size: localSettings.value.size,
-    bitrate: localSettings.value.bitrate * 1000000,
-    min_bitrate: localSettings.value.minBitrate * 1000000,
-    max_bitrate: localSettings.value.maxBitrate * 1000000,
-    bwe: localSettings.value.bwe,
-    audio: localSettings.value.audio,
-    audio_gain: localSettings.value.audioGain,
-    audio_source: localSettings.value.audioSource,
-    audio_dup: localSettings.value.audioDup,
-    audio_low_latency: localSettings.value.audioLowLatency,
-    debug: localSettings.value.debug,
-    snapshot_interval: localSettings.value.snapshotInterval,
-    power_off: localSettings.value.powerOff,
-    video_codec_options: localSettings.value.videoCodecOptions,
-    camera: localSettings.value.camera,
-    stay_awake: localSettings.value.stayAwake,
-    video_source: localSettings.value.videoSource,
-    camera_facing: localSettings.value.cameraFacing,
-    camera_id: localSettings.value.cameraId,
-    camera_size: localSettings.value.cameraSize,
-    camera_fps: localSettings.value.cameraFps,
-    camera_high_speed: localSettings.value.cameraHighSpeed,
-    camera_ar: localSettings.value.cameraAr,
-    camera_zoom: localSettings.value.cameraZoomRatio || 1.0,
-    camera_orientation: localSettings.value.cameraOrientation || 'auto'
-  }
-})
+const scrcpyOptions = computed(() => buildStreamOptions(localSettings.value))
 
 // --- 📷 摄像头监控专属状态与控制 ---
 const isCameraMode = computed(() => localSettings.value?.videoSource === 'camera')
@@ -1176,13 +1147,15 @@ function stopRecording() {
   }
 }
 
-function saveSettings(newSettings) {
-  localSettings.value = newSettings
-  pageAudioMuted.value = Boolean(newSettings.pageAudioMuted)
-  
+async function saveSettings(newSettings) {
   isSavingSettingsSelf = true
   try {
-    saveDeviceSettings(currentId.value, newSettings)
+    await saveDeviceSettings(currentId.value, newSettings)
+    localSettings.value = newSettings
+    pageAudioMuted.value = Boolean(newSettings.pageAudioMuted)
+  } catch (err) {
+    alert(err.message)
+    return
   } finally {
     isSavingSettingsSelf = false
   }
@@ -1202,10 +1175,13 @@ function saveSettings(newSettings) {
   }
 }
 
-function resetSettings() {
+async function resetSettings() {
   isSavingSettingsSelf = true
   try {
-    deleteDeviceSettings(currentId.value)
+    await deleteDeviceSettings(currentId.value)
+  } catch (err) {
+    alert(err.message)
+    return
   } finally {
     isSavingSettingsSelf = false
   }

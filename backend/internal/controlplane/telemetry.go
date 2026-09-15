@@ -18,6 +18,21 @@ func (s *Server) snapshotPath(deviceID string) string {
 	return filepath.Join(s.config.AssetDir, "snapshots", fmt.Sprintf("%x.png", sha256.Sum256([]byte(deviceID))))
 }
 
+// Older Agents reported bytes/s without a unit. Keep their telemetry usable
+// while new Agents and the frontend use the explicit KiB/s contract.
+func normalizeNetworkMetrics(raw map[string]any) map[string]any {
+	metrics := cloneMap(raw)
+	if unit := stringField(metrics, "network_speed_unit"); unit == "" || unit == "B/s" {
+		for _, key := range []string{"download_speed", "upload_speed"} {
+			if value, ok := metrics[key].(float64); ok {
+				metrics[key] = value / 1024
+			}
+		}
+		metrics["network_speed_unit"] = "KiB/s"
+	}
+	return metrics
+}
+
 func (s *Server) saveSnapshot(deviceID, encoded string) error {
 	if len(encoded) > 1<<20 {
 		return fmt.Errorf("snapshot too large")

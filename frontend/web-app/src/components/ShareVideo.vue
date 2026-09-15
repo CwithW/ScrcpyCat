@@ -138,7 +138,7 @@
 <script setup>
 import { ref, shallowRef, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useWebRTC } from '@/composables/useWebRTC'
-import { defaultSettings } from '@/utils/settings'
+import { defaultSettings, parseSettings, buildStreamOptions } from '@/utils/settings'
 import SettingsModal from '@/components/SettingsModal.vue'
 
 const props = defineProps({
@@ -176,7 +176,7 @@ const canvasEl = ref(null)
 // 用户首次点击页面/按钮后开声音
 const soundOn = ref(false)
 const showSettingsModal = ref(false)
-const cameraSupport = ref(true)
+const cameraSupport = ref(false)
 
 // --- 访客本地流配置：与主控台同一 schema，但存分享专属 key，避免污染同浏览器管理员配置 ---
 const shareSettingsKey = computed(() => `cloudphone_share_settings_${props.deviceId}`)
@@ -192,7 +192,7 @@ const DIM_KEYS = {
 
 function loadShareSettings() {
   // 分享者配置（服务端下发）优先于默认值
-  const base = { ...shareDefaults, ...(props.guestSettings || {}) }
+  const base = { ...shareDefaults, ...parseSettings(props.guestSettings) }
   try {
     const stored = JSON.parse(localStorage.getItem(shareSettingsKey.value) || 'null')
     if (stored && typeof stored === 'object') {
@@ -201,7 +201,7 @@ function loadShareSettings() {
       if (props.forbidFps) DIM_KEYS.fps.forEach(k => forbidden.add(k))
       if (props.forbidResolution) DIM_KEYS.resolution.forEach(k => forbidden.add(k))
       if (props.forbidAudio) DIM_KEYS.audio.forEach(k => forbidden.add(k))
-      for (const [k, v] of Object.entries(stored)) {
+      for (const [k, v] of Object.entries(parseSettings(stored))) {
         if (!forbidden.has(k)) base[k] = v
       }
     }
@@ -220,28 +220,9 @@ const error = ref(null)
 let stopWatchers = []
 
 function buildOptions() {
-  const s = localSettings.value
   return {
+    ...buildStreamOptions(localSettings.value),
     view_only: isViewOnly.value,
-    max_fps: s.fps,
-    max_size: s.size,
-    bitrate: s.bitrate * 1000000,
-    min_bitrate: (s.minBitrate || 8) * 1000000,
-    max_bitrate: (s.maxBitrate || 20) * 1000000,
-    bwe: s.bwe,
-    audio: s.audio,
-    audio_gain: s.audioGain,
-    audio_source: s.audioSource,
-    audio_dup: s.audioDup,
-    audio_low_latency: s.audioLowLatency,
-    power_off: s.powerOff,
-    video_source: s.videoSource,
-    camera_facing: s.cameraFacing,
-    camera_id: s.cameraId,
-    camera_size: s.cameraSize,
-    camera_fps: s.cameraFps,
-    camera_high_speed: s.cameraHighSpeed,
-    camera_ar: s.cameraAr
   }
 }
 

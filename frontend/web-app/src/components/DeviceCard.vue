@@ -153,15 +153,15 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="5" r="3"></circle><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="19" r="3"></circle><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line></svg>
         分享设备 / 卡密
       </button>
-      <button class="menu-item" @click.stop="onEditTags">
+      <button v-if="authStore.isAdmin" class="menu-item" @click.stop="onEditTags">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 12v7a1 1 0 0 1-1 1h-7L4 12V5a1 1 0 0 1 1-1h7l8 8z"></path><circle cx="8.5" cy="8.5" r="1.5"></circle></svg>
         编辑标签
       </button>
-      <button class="menu-item danger" @click.stop="onQuitAgent" :disabled="device.status !== 'online'">
+      <button v-if="authStore.isAdmin" class="menu-item danger" @click.stop="onQuitAgent" :disabled="device.status !== 'online'">
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 2v6M12 4.5a6 6 0 11-8 0"/></svg>
         退出 Agent
       </button>
-      <button v-if="device.status !== 'online'" class="menu-item danger" @click.stop="onDeleteRecord">
+      <button v-if="authStore.isAdmin && device.status !== 'online'" class="menu-item danger" @click.stop="onDeleteRecord">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
         移除记录
       </button>
@@ -176,9 +176,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useDeviceStore } from '@/stores/devices'
 import { useAuthStore } from '@/stores/auth'
-import { H264Decoder } from 'h264decoder'
-import { parseAnnexB, readH264Crop, drawYUV420 } from '@/utils/h264'
-import { getDeviceSettings } from '@/utils/settings'
+import { PreviewDecoder } from '@/utils/previewDecoder'
+import { getDeviceSettings, buildStreamOptions } from '@/utils/settings'
 import { useGroupControlStore } from '@/stores/groupControl'
 
 const props = defineProps({
@@ -292,7 +291,6 @@ function onSlaveCheckboxChange() {
 const currentSnapshot = ref(props.device.snapshot || '')
 const nextSnapshotUrl = ref('')
 const isPreviewActive = ref(false)
-const hasReceivedKeyFrame = ref(false)
 const isFirstFrameRendered = ref(false)
 const previewCanvas = ref(null)
 const cardElement = ref(null)
@@ -437,231 +435,24 @@ function onClickOutside(event) {
   }
 }
 
-let h264Decoder = null  // WASM 软件解码器
-let videoDecoder = null // WebCodecs 硬件解码器
-let hasConfigured = false
+let previewDecoder = null
 let isCardVisible = false
 let observer = null
-let frameCrop = null
-let lastSps = null
-let lastPps = null
 
-// 比较两个 ArrayBuffer 是否相等
-function areBuffersEqual(buf1, buf2) {
-  if (!buf1 || !buf2) return false
-  if (buf1.length !== buf2.length) return false
-  for (let i = 0; i < buf1.length; i++) {
-    if (buf1[i] !== buf2[i]) return false
-  }
-  return true
+function initDecoder(mode) {
+  previewDecoder?.close()
+  previewDecoder = new PreviewDecoder(() => previewCanvas.value, {
+    mode,
+    onFrame: () => { isFirstFrameRendered.value = true },
+    onError: error => {
+      console.warn('预览解码失败:', error.message)
+      stopPreviewFlow()
+    }
+  })
 }
 
-// 解析 H.264 Annex B 比特流分割为单独的 NALU
-
-
-// 根据选择的解码模式初始化对应的解码器
-function initDecoder(decoderMode) {
-  if (decoderMode === 'webcodecs') {
-    if (typeof VideoDecoder === 'undefined') {
-      console.warn(`[WebCodecs] Browser does not support VideoDecoder. Falling back to WASM decoder for ${props.device.id}.`)
-      initDecoder('wasm')
-      return
-    }
-
-    if (videoDecoder) return
-
-    videoDecoder = new VideoDecoder({
-      output: (frame) => {
-        const canvasEl = previewCanvas.value
-        if (!canvasEl) {
-          frame.close()
-          return
-        }
-        const ctx = canvasEl.getContext('2d')
-        // 动态调整 canvas 真实渲染分辨率
-        if (canvasEl.width !== frame.displayWidth || canvasEl.height !== frame.displayHeight) {
-          canvasEl.width = frame.displayWidth
-          canvasEl.height = frame.displayHeight
-        }
-        ctx.drawImage(frame, 0, 0, canvasEl.width, canvasEl.height)
-        frame.close() // 必须立刻关闭，释放显存
-        isFirstFrameRendered.value = true
-      },
-      error: (e) => {
-        console.error(`[WebCodecs] Decoder error for ${props.device.id}:`, e)
-        stopPreviewFlow()
-      }
-    })
-    hasConfigured = false
-    lastSps = null
-    lastPps = null
-  } else {
-    if (h264Decoder) return
-    try {
-      h264Decoder = new H264Decoder()
-    } catch (err) {
-      console.error(`[WASM-Decoder] Failed to initialize for ${props.device.id}:`, err)
-    }
-  }
-}
-
-// 高效地将 YUV420p 数据转换并绘制在 Canvas 上 (WASM 模式专用)
-function renderYUV(canvasEl, yuv, width, height) {
-  drawYUV420(canvasEl, yuv, width, height, frameCrop)
-}
-
-function feedFrame(nalu, isKey, ptsUs, decoderMode) {
-  // 首帧关键帧过滤逻辑
-  if (!hasReceivedKeyFrame.value) {
-    if (!isKey) {
-      // 丢弃首帧之前的 delta 帧，避免画面抖动或花屏
-      return
-    }
-    hasReceivedKeyFrame.value = true
-  }
-
-  // 深度克隆 nalu 数组，规避底层内存共享与对齐 Bug
-  if (isKey) {
-    const sps = parseAnnexB(nalu).find(unit => (unit[0] & 31) === 7)
-    if (sps) frameCrop = readH264Crop(sps)
-  }
-
-  const cleanNalu = new Uint8Array(nalu.length)
-  cleanNalu.set(nalu)
-
-  let activeMode = decoderMode
-  if (activeMode === 'webcodecs' && typeof VideoDecoder === 'undefined') {
-    activeMode = 'wasm'
-  }
-
-  if (activeMode === 'webcodecs') {
-    if (!videoDecoder) {
-      initDecoder(activeMode)
-    }
-
-    if (videoDecoder && videoDecoder.state === 'closed') {
-      videoDecoder = null
-      initDecoder(activeMode)
-    }
-
-    if (!videoDecoder) return
-
-    // 解析 Annex B 并提取其中的各个 NALU
-    const naluList = parseAnnexB(cleanNalu)
-    let sps = null
-    let pps = null
-    const slices = []
-
-    for (const n of naluList) {
-      if (n.length === 0) continue
-      const naluType = n[0] & 0x1F
-      if (naluType === 7) {
-        sps = n
-      } else if (naluType === 8) {
-        pps = n
-      } else if (naluType === 5 || naluType === 1) {
-        slices.push(n)
-      }
-    }
-
-    // 动态生成配置并配置解码器 (当检测到 SPS/PPS 且和上次不同时)
-    if (sps && pps && (!areBuffersEqual(sps, lastSps) || !areBuffersEqual(pps, lastPps))) {
-      lastSps = sps
-      lastPps = pps
-
-      // 组装 AVCDecoderConfigurationRecord 作为 description 字节数组
-      const record = new Uint8Array(11 + sps.length + pps.length)
-      record[0] = 1 // configurationVersion
-      record[1] = sps[1] // AVCProfileIndication
-      record[2] = sps[2] // profile_compatibility
-      record[3] = sps[3] // AVCLevelIndication
-      record[4] = 0xff // lengthSizeMinusOne: 3 (4 bytes length)
-      record[5] = 0xe1 // numOfSequenceParameterSets: 1
-      
-      // SPS 长度与数据
-      record[6] = (sps.length >> 8) & 0xff
-      record[7] = sps.length & 0xff
-      record.set(sps, 8)
-      
-      // PPS 长度与数据
-      const ppsOffset = 8 + sps.length
-      record[ppsOffset] = 1 // numOfPictureParameterSets: 1
-      record[ppsOffset+1] = (pps.length >> 8) & 0xff
-      record[ppsOffset+2] = pps.length & 0xff
-      record.set(pps, ppsOffset + 3)
-
-      // 根据 SPS 动态生成 Codec 字符串 (avc1.xxxxxx)
-      const codecStr = 'avc1.' + Array.from(sps.subarray(1, 4)).map(x => x.toString(16).padStart(2, '0')).join('')
-
-      try {
-        videoDecoder.configure({
-          codec: codecStr,
-          description: record,
-          optimizeForLatency: true
-        })
-        hasConfigured = true
-        console.log(`[WebCodecs] Successfully configured decoder for ${props.device.id} with codec ${codecStr}`)
-      } catch (err) {
-        console.error(`[WebCodecs] Configure failed for ${props.device.id}:`, err)
-        return
-      }
-    }
-
-    // 必须完成 configure 之后才能向解码器喂 Slice
-    if (!hasConfigured) return
-
-    if (slices.length > 0) {
-      // 组装 AVCC 格式数据 (每个 slice 增加 4 字节的大端序长度前缀)
-      let totalSize = 0
-      for (const slice of slices) {
-        totalSize += 4 + slice.length
-      }
-
-      const avccBuffer = new Uint8Array(totalSize)
-      let offset = 0
-      for (const slice of slices) {
-        const len = slice.length
-        avccBuffer[offset] = (len >> 24) & 0xff
-        avccBuffer[offset+1] = (len >> 16) & 0xff
-        avccBuffer[offset+2] = (len >> 8) & 0xff
-        avccBuffer[offset+3] = len & 0xff
-        avccBuffer.set(slice, offset + 4)
-        offset += 4 + len
-      }
-
-      const chunk = new EncodedVideoChunk({
-        type: isKey ? 'key' : 'delta',
-        timestamp: ptsUs,
-        data: avccBuffer
-      })
-
-      try {
-        videoDecoder.decode(chunk)
-      } catch (err) {
-        console.warn(`[WebCodecs] Decode failed for ${props.device.id}:`, err)
-      }
-    }
-  } else {
-    // WASM 软件解码模式
-    if (!h264Decoder) {
-      initDecoder(activeMode)
-    }
-
-    if (!h264Decoder) return
-
-    try {
-      const result = h264Decoder.decode(cleanNalu)
-      if (result === H264Decoder.PIC_RDY) {
-        const canvas = previewCanvas.value
-        if (canvas) {
-          renderYUV(canvas, h264Decoder.pic, h264Decoder.width, h264Decoder.height)
-          isFirstFrameRendered.value = true
-        }
-      }
-    } catch (err) {
-      console.warn(`[WASM-Decoder] Decode failed for ${props.device.id}:`, err)
-    }
-  }
+function feedFrame(data, key, timestamp) {
+  previewDecoder?.feed(data, key, timestamp)
 }
 
 // 预览流启停逻辑
@@ -672,11 +463,7 @@ function startPreviewFlow() {
   
   // 获取设备的连接设置中配置的高频预览参数
   const settings = getDeviceSettings(props.device.id)
-  const fps = settings.previewFps || 10
-  const maxSize = settings.previewSize || 360
-  const bitrate = settings.previewBitrate || 1
   const decoderMode = settings.previewDecoder || 'wasm'
-  const stayAwake = settings.stayAwake || false
   
   initDecoder(decoderMode)
   
@@ -685,13 +472,11 @@ function startPreviewFlow() {
     feedFrame(nalu, isKey, ptsUs, decoderMode)
   })
   
-  // 发送 start_preview 控制指令，带上定制的 fps, maxSize, bitrate 和 stayAwake
-  deviceStore.sendPreviewControl('start_preview', props.device.id, fps, maxSize, bitrate, stayAwake)
+  deviceStore.sendPreviewControl('start_preview', props.device.id, buildStreamOptions(settings, { preview: true }))
 }
 
 function stopPreviewFlow() {
   isPreviewActive.value = false
-  hasReceivedKeyFrame.value = false
   isFirstFrameRendered.value = false
   
   // 注销卡片自己的回调
@@ -704,21 +489,8 @@ function stopPreviewFlow() {
     deviceStore.sendPreviewControl('stop_preview', props.device.id)
   }
   
-  // 释放 WebCodecs 解码器
-  if (videoDecoder) {
-    try {
-      videoDecoder.close()
-    } catch (e) {}
-    videoDecoder = null
-  }
-  hasConfigured = false
-  lastSps = null
-  lastPps = null
-
-  // 释放 WASM 解码器
-  if (h264Decoder) {
-    h264Decoder = null
-  }
+  previewDecoder?.close()
+  previewDecoder = null
 }
 
 // 监控全局预览开关和可视区域变化
@@ -757,10 +529,8 @@ watch(() => deviceStore.globalPreviewMode, () => {
 })
 
 // 监听在线状态变化（掉线自动清理）
-watch(() => props.device.status, (newStatus) => {
-  if (newStatus !== 'online' && isPreviewActive.value) {
-    stopPreviewFlow()
-  }
+watch(() => props.device.status, () => {
+  evaluatePreviewState()
 })
 
 // 监听群控从机列表变化，动态启停预览
@@ -773,26 +543,16 @@ watch(() => groupControlStore.isGroupControlActive, () => {
   evaluatePreviewState()
 })
 
-// 监听该设备高频预览参数的变化 (实现无缝切换)
-watch(() => {
-  const settings = getDeviceSettings(props.device.id)
-  return {
-    fps: settings.previewFps,
-    maxSize: settings.previewSize,
-    decoder: settings.previewDecoder,
-    stayAwake: settings.stayAwake
-  }
-}, (newVal, oldVal) => {
-  if (isPreviewActive.value) {
-    if (newVal.fps !== oldVal.fps || newVal.maxSize !== oldVal.maxSize || newVal.decoder !== oldVal.decoder || newVal.stayAwake !== oldVal.stayAwake) {
-      console.log(`[PreviewSettings] Restarting preview flow for ${props.device.id} to apply new settings:`, newVal)
-      stopPreviewFlow()
-      startPreviewFlow()
-    }
-  }
-}, { deep: true })
+// localStorage 不是响应式数据，使用设置保存/远程同步事件更新预览。
+function onPreviewSettingsUpdated(event) {
+  if (event.detail?.deviceId && event.detail.deviceId !== props.device.id) return
+  if (!isPreviewActive.value) return
+  stopPreviewFlow()
+  startPreviewFlow()
+}
 
 onMounted(() => {
+  window.addEventListener('cloudphone-settings-updated', onPreviewSettingsUpdated)
   document.addEventListener('click', onClickOutside)
 
   // 监控可视区域
@@ -826,6 +586,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('cloudphone-settings-updated', onPreviewSettingsUpdated)
   document.removeEventListener('click', onClickOutside)
   
   if (observer) {

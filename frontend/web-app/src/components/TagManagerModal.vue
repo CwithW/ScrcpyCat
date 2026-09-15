@@ -13,6 +13,7 @@
       </header>
 
       <div class="modal-body" :class="{ 'assign-mode': mode === 'assign' }">
+        <p v-if="tagError || tagStore.syncError" class="error-text" role="alert" style="grid-column: 1 / -1">{{ tagStore.syncError || tagError }}</p>
         <section v-if="mode === 'full'" class="panel tags-panel">
           <div class="panel-header">
             <h3>标签</h3>
@@ -30,8 +31,6 @@
             <input v-model="newTagColor" class="color-input" type="color" title="标签颜色">
             <button class="primary-btn" type="submit">新增</button>
           </form>
-
-          <p v-if="tagError" class="error-text">{{ tagError }}</p>
 
           <div v-if="tagStore.tags.length === 0" class="empty-state">
             还没有标签
@@ -270,7 +269,11 @@ async function applyAssignments() {
     tagStore.setDeviceTagsInMemory(deviceId, nextTags)
   })
   
-  await tagStore.saveAndSync()
+  if (!await tagStore.saveAndSync()) {
+    tagError.value = tagStore.syncError
+    alert(tagError.value)
+    return
+  }
   tempSelection.value = {}
   
   if (props.mode === 'assign') {

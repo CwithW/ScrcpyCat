@@ -132,6 +132,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/agent/", s.requireAdmin(s.agentArtifact))
 	mux.HandleFunc("/api/ice_servers", s.requireUser(s.iceServerList))
 	mux.HandleFunc("/api/default_settings", s.requireUser(s.defaultSettings))
+	mux.HandleFunc("/api/device_settings", s.requireUser(s.allDeviceSettings))
 	mux.HandleFunc("/api/tags", s.requireUser(s.tags))
 	mux.HandleFunc("/api/admin/users", s.requireAdmin(s.adminUsers))
 	mux.HandleFunc("/api/admin/assign", s.requireAdmin(s.adminAssign))
@@ -248,6 +249,21 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w)
+		return
+	}
+	token := bearerToken(r.Header.Get("Authorization"))
+	parsed, err := parseUserToken(s.config.JWTSecret, token)
+	if err != nil || parsed.ExpiresAt == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err := s.store.RevokeUserToken(tokenDigest(token), parsed.ExpiresAt.Time); err != nil {
+		writeError(w, http.StatusServiceUnavailable, "save logout")
+		return
+	}
+	s.hub.disconnectToken(tokenDigest(token))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
@@ -302,9 +318,17 @@ func (s *Server) defaultSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid settings")
 			return
 		}
+		if err := validateDeviceSettings(settings); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		s.store.SetDefaultSettings(settings)
+		if s.store.Healthy() != nil {
+			writeError(w, http.StatusServiceUnavailable, "save settings")
+			return
+		}
 		for _, device := range s.store.DevicesFor(User{Role: RoleAdmin}) {
-			s.hub.sendAgent(device.ID, map[string]any{"message_type": "agent_settings", "settings": settings})
+			s.hub.sendAgent(device.ID, map[string]any{"message_type": "agent_settings", "settings": s.agentSettings(device.ID)})
 		}
 		s.hub.broadcast(map[string]any{"message_type": "global_settings_updated", "settings": settings})
 		writeJSON(w, http.StatusOK, settings)
@@ -316,34 +340,56 @@ func (s *Server) defaultSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) tags(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		tags, assignments := s.store.Tags()
-		writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "device_tags": assignments})
+		writeJSON(w, http.StatusOK, s.tagsFor(currentUser(r)))
 	case http.MethodPut, http.MethodPost:
 		if currentUser(r).Role != RoleAdmin {
 			writeError(w, http.StatusForbidden, "admin permission required")
 			return
 		}
 		var body struct {
-			Tags       []Tag               `json:"tags"`
-			DeviceTags map[string][]string `json:"device_tags"`
+			Tags               []Tag               `json:"tags"`
+			DeviceTags         map[string][]string `json:"device_tags"`
+			FrontendDeviceTags map[string][]string `json:"deviceTags"`
 		}
 		if err := decodeJSON(r, &body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid tags request")
 			return
 		}
+		if body.DeviceTags != nil && body.FrontendDeviceTags != nil {
+			writeError(w, http.StatusBadRequest, "specify only one device tags field")
+			return
+		}
+		if body.FrontendDeviceTags != nil {
+			body.DeviceTags = body.FrontendDeviceTags
+		}
 		s.store.ReplaceTags(body.Tags, body.DeviceTags)
+		if s.store.Healthy() != nil {
+			writeError(w, http.StatusServiceUnavailable, "save tags")
+			return
+		}
 		tags, assignments := s.store.Tags()
 		s.hub.broadcast(map[string]any{"message_type": "tags_update", "tags": tags, "deviceTags": assignments})
-		writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "device_tags": assignments})
+		writeJSON(w, http.StatusOK, s.tagsFor(currentUser(r)))
 	default:
 		methodNotAllowed(w)
 	}
 }
 
+func (s *Server) tagsFor(user User) map[string]any {
+	tags, assignments := s.store.Tags()
+	for id := range assignments {
+		if !s.store.CanAccessDevice(user, id) {
+			delete(assignments, id)
+		}
+	}
+	// Keep the original REST spelling as well as the imported UI contract.
+	return map[string]any{"tags": tags, "deviceTags": assignments, "device_tags": assignments}
+}
+
 func (s *Server) adminUsers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, s.store.Users())
+		writeJSON(w, http.StatusOK, s.hub.usersWithPresence(s.store.Users()))
 	case http.MethodPost:
 		var body struct {
 			Username        string   `json:"username"`
@@ -402,7 +448,7 @@ func (s *Server) connectClient(w http.ResponseWriter, r *http.Request) {
 	}
 	audioDone := make(chan struct{})
 	defer close(audioDone)
-	peer := &browserPeer{id: randomID(), user: user, viewOnly: viewOnly, socket: &socketPeer{conn: conn}, audioFrames: make(chan []byte, 5), audioDone: audioDone}
+	peer := &browserPeer{id: randomID(), user: user, accessToken: access.accessToken, viewOnly: viewOnly, socket: &socketPeer{conn: conn}, audioFrames: make(chan []byte, 5), audioDone: audioDone}
 	go peer.writeAudio()
 	conn.SetReadLimit(2 << 20)
 	stopAccessWatch := s.watchBrowserAccess(access, peer)
@@ -414,7 +460,7 @@ func (s *Server) connectClient(w http.ResponseWriter, r *http.Request) {
 			s.hub.sendAgent(deviceID, map[string]any{"message_type": "stop_audio", "device_id": deviceID})
 		}
 		for _, deviceID := range s.hub.removeBrowser(peer.id) {
-			s.hub.sendAgent(deviceID, map[string]any{"message_type": "stop_preview", "device_id": deviceID})
+			s.syncPreview(deviceID)
 		}
 		_ = peer.socket.close()
 		s.broadcastDeviceList()
@@ -472,17 +518,19 @@ func (s *Server) handleBrowserMessage(peer *browserPeer, message map[string]any)
 			return
 		}
 		s.hub.subscribePreview(peer.id, deviceID)
-		message = s.constrainedStreamOptions(peer.user, message)
-		s.hub.sendAgent(deviceID, withClient(message, peer.id))
+		message = s.constrainedStreamOptions(peer.user, deviceID, message)
+		s.hub.setPreviewRequest(peer.id, deviceID, message)
+		s.syncPreview(deviceID)
 	case "stop_preview":
 		if deviceID == "" || !s.store.CanAccessDevice(peer.user, deviceID) {
 			return
 		}
-		if s.hub.unsubscribePreview(peer.id, deviceID) {
-			s.hub.sendAgent(deviceID, withClient(message, peer.id))
-		}
-	case "forward", "inject_data":
-		if deviceID == "" || !s.store.CanAccessDevice(peer.user, deviceID) || (messageType == "inject_data" && peer.viewOnly) {
+		s.hub.unsubscribePreview(peer.id, deviceID)
+		s.syncPreview(deviceID)
+	case "inject_data":
+		s.injectData(peer, deviceID, message)
+	case "forward":
+		if deviceID == "" || !s.store.CanAccessDevice(peer.user, deviceID) {
 			return
 		}
 		forwarded := withClient(message, peer.id)
@@ -490,7 +538,7 @@ func (s *Server) handleBrowserMessage(peer *browserPeer, message map[string]any)
 		forwarded["permissions"] = map[string]bool{"control": !peer.viewOnly, "shell": peer.user.Can("shell")}
 		if payload, ok := forwarded["payload"].(map[string]any); ok && stringField(payload, "type") == "request-offer" {
 			raw, _ := payload["scrcpy_options"].(map[string]any)
-			payload["scrcpy_options"] = s.constrainedStreamOptions(peer.user, raw)
+			payload["scrcpy_options"] = s.constrainedStreamOptions(peer.user, deviceID, raw)
 		}
 		s.hub.sendAgent(deviceID, forwarded)
 	case "quit_agent":
@@ -601,7 +649,7 @@ func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	_ = peer.writeJSON(map[string]any{"message_type": "agent_config", "agent_token": agentToken, "ice_servers": s.iceServers(), "default_settings": s.store.DefaultSettings()})
+	_ = peer.writeJSON(map[string]any{"message_type": "agent_config", "agent_token": agentToken, "ice_servers": s.iceServers(), "default_settings": s.agentSettings(hello.DeviceID)})
 	for _, taskID := range s.store.PendingTasks(hello.DeviceID) {
 		_ = peer.writeJSON(map[string]any{"message_type": "task_available", "task_id": taskID, "device_id": hello.DeviceID})
 	}
@@ -647,13 +695,14 @@ func (s *Server) handleAgentMessage(deviceID string, message map[string]any) {
 				s.broadcastDeviceList()
 			}
 		}
-	case "device_msg", "command_result", "screenshot_response", "file_message", "pty_data", "pty_opened", "pty_closed", "pty_error", "audio_error":
+	case "device_msg", "command_result", "screenshot_response", "file_message", "pty_data", "pty_opened", "pty_closed", "pty_error", "audio_error", "capability_error":
 		if clientID := stringField(message, "client_id"); clientID != "" {
 			delete(message, "client_id")
 			s.hub.sendBrowser(clientID, message)
 		}
 	case "device_metrics":
 		if metrics, ok := message["metrics"].(map[string]any); ok {
+			metrics = normalizeNetworkMetrics(metrics)
 			s.deviceMetrics.Store(deviceID, metrics)
 			s.hub.broadcast(map[string]any{"type": "device_metrics", "device_id": deviceID, "metrics": metrics})
 		}

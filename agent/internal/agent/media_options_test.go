@@ -25,25 +25,22 @@ func TestMediaOptionsReachScrcpy(t *testing.T) {
 	}
 }
 
-func TestProfilelessOptionsRemoveEveryProfileConstraint(t *testing.T) {
+func TestCompatibleProfilePreservesExplicitEncoderOptions(t *testing.T) {
 	options, err := parseStreamOptions(map[string]any{
 		"video_codec_options": "i-frame-interval=2,profile=8,level=42",
 	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	baseline := strings.Join(options.arguments(), " ")
-	if !strings.Contains(baseline, "profile=1") {
-		t.Fatalf("Baseline profile missing from %q", baseline)
-	}
-	profileless := strings.Join(options.withoutH264Profile().arguments(), " ")
-	if strings.Contains(profileless, "profile=") {
-		t.Fatalf("profile constraint leaked into fallback: %q", profileless)
-	}
-	for _, expected := range []string{"i-frame-interval=2", "level=42"} {
-		if !strings.Contains(profileless, expected) {
-			t.Fatalf("fallback dropped %s from %q", expected, profileless)
+	arguments := strings.Join(options.arguments(), " ")
+	for _, expected := range []string{"i-frame-interval=2", "level=42", "profile=8"} {
+		if !strings.Contains(arguments, expected) {
+			t.Fatalf("encoder option %s missing from %q", expected, arguments)
 		}
+	}
+	defaults, err := parseStreamOptions(nil, false)
+	if err != nil || strings.Contains(strings.Join(defaults.arguments(), " "), "profile=") {
+		t.Fatalf("default capture forces a profile: %+v, %v", defaults, err)
 	}
 }
 
@@ -95,7 +92,7 @@ func TestAudioSourceAndDuplication(t *testing.T) {
 }
 
 func TestWebSocketAudioKeepsDisplayCaptureAndRTCPreferencesSeparate(t *testing.T) {
-	manager := &mediaManager{wsAudioOptions: map[string]string{"audio_source": "output"}}
+	manager := &mediaManager{display: newWebRTCManager(nil, nil, nil), wsAudioOptions: map[string]string{"audio_source": "output"}}
 	manager.wsAudioActive.Store(true)
 	raw := map[string]any{"audio": false, "max_size": float64(720), "audio_source": "mic"}
 	options, err := parseStreamOptions(raw, true)

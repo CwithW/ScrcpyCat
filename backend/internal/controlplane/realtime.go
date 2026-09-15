@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"sort"
 	"sync"
 	"time"
 
@@ -34,6 +35,7 @@ type browserPeer struct {
 	socket      *socketPeer
 	deviceID    string
 	viewOnly    bool
+	accessToken string
 	audioFrames chan []byte
 	audioDone   <-chan struct{}
 }
@@ -43,6 +45,8 @@ type realtimeHub struct {
 	agents             map[string]*socketPeer
 	browsers           map[string]*browserPeer
 	previewSubscribers map[string]map[string]*browserPeer
+	previewRequests    map[string]map[string]previewRequest
+	previewOrder       uint64
 	audioSubscribers   map[string]map[string]*browserPeer
 	filter             func(*browserPeer, any) any
 }
@@ -52,6 +56,7 @@ func newRealtimeHub() *realtimeHub {
 		agents:             make(map[string]*socketPeer),
 		browsers:           make(map[string]*browserPeer),
 		previewSubscribers: make(map[string]map[string]*browserPeer),
+		previewRequests:    make(map[string]map[string]previewRequest),
 		audioSubscribers:   make(map[string]map[string]*browserPeer),
 	}
 }
@@ -68,10 +73,15 @@ func (h *realtimeHub) removeBrowser(id string) []string {
 	delete(h.browsers, id)
 	var stopped []string
 	for deviceID, subscribers := range h.previewSubscribers {
+		if _, subscribed := subscribers[id]; !subscribed {
+			continue
+		}
 		delete(subscribers, id)
+		delete(h.previewRequests[deviceID], id)
+		stopped = append(stopped, deviceID)
 		if len(subscribers) == 0 {
 			delete(h.previewSubscribers, deviceID)
-			stopped = append(stopped, deviceID)
+			delete(h.previewRequests, deviceID)
 		}
 	}
 	return stopped
@@ -138,11 +148,50 @@ func (h *realtimeHub) unsubscribePreview(browserID, deviceID string) bool {
 		return false
 	}
 	delete(subscribers, browserID)
+	delete(h.previewRequests[deviceID], browserID)
 	if len(subscribers) == 0 {
 		delete(h.previewSubscribers, deviceID)
+		delete(h.previewRequests, deviceID)
 		return true
 	}
 	return false
+}
+
+type previewRequest struct {
+	order   uint64
+	message map[string]any
+}
+
+func (h *realtimeHub) setPreviewRequest(browserID, deviceID string, message map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.previewRequests[deviceID] == nil {
+		h.previewRequests[deviceID] = map[string]previewRequest{}
+	}
+	h.previewOrder++
+	h.previewRequests[deviceID][browserID] = previewRequest{order: h.previewOrder, message: withClient(message, browserID)}
+}
+
+func (h *realtimeHub) selectedPreviewRequest(deviceID string) map[string]any {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var selected previewRequest
+	awake := false
+	for _, request := range h.previewRequests[deviceID] {
+		awake = awake || request.message["stay_awake"] == true
+		foreground := request.message["preview"] == false
+		selectedForeground := selected.message["preview"] == false
+		if selected.message == nil || (foreground && !selectedForeground) || (foreground == selectedForeground && request.order > selected.order) {
+			selected = request
+		}
+	}
+	if selected.message == nil {
+		return nil
+	}
+	result := cloneMap(selected.message)
+	result["stay_awake"] = awake
+	result["device_id"] = deviceID
+	return result
 }
 
 func (h *realtimeHub) publishPreview(deviceID string, frame []byte) {
@@ -187,6 +236,51 @@ func (h *realtimeHub) disconnectBrowsers(username, deviceID string) {
 	for _, peer := range peers {
 		_ = peer.socket.close()
 	}
+}
+
+func (h *realtimeHub) disconnectToken(digest string) {
+	h.mu.RLock()
+	var peers []*browserPeer
+	for _, peer := range h.browsers {
+		if peer.accessToken == digest {
+			peers = append(peers, peer)
+		}
+	}
+	h.mu.RUnlock()
+	for _, peer := range peers {
+		_ = peer.socket.close()
+	}
+}
+
+type userPresence struct {
+	User
+	Online        bool     `json:"online"`
+	ActiveDevices []string `json:"active_devices"`
+}
+
+func (h *realtimeHub) usersWithPresence(users []User) []userPresence {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	result := make([]userPresence, 0, len(users))
+	for _, user := range users {
+		entry := userPresence{User: user, ActiveDevices: []string{}}
+		devices := map[string]bool{}
+		for _, peer := range h.browsers {
+			if peer.user.ID != user.ID {
+				continue
+			}
+			entry.Online = true
+			if peer.deviceID != "" && !peer.viewOnly {
+				devices[peer.deviceID] = true
+			}
+		}
+		for id := range devices {
+			entry.ActiveDevices = append(entry.ActiveDevices, id)
+		}
+		sort.Strings(entry.ActiveDevices)
+		result = append(result, entry)
+	}
+	return result
 }
 
 func (h *realtimeHub) publishClipboard(deviceID string, message any) {

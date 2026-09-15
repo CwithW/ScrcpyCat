@@ -102,7 +102,7 @@
       <div class="nav-tag-group" v-if="!showDeployPage && !showFilePage && !showMonitorPage && !showAdvancedPage && !showShareAdminPage">
         <div class="nav-tag-group-title">
           <span>标签</span>
-          <button class="nav-tag-manage-btn" @click="openTagManager">
+          <button v-if="authStore.isAdmin" class="nav-tag-manage-btn" @click="openTagManager">
             <span class="manage-plus">+</span>
             <span class="manage-text">管理</span>
           </button>
@@ -497,6 +497,7 @@
 </template>
 
 <script setup>
+import { loadRemoteDeviceSettings } from '@/utils/settings'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useDeviceStore } from '@/stores/devices'
@@ -721,6 +722,7 @@ const updateMedia = () => {
 }
 
 function openTagManager() {
+  if (!authStore.isAdmin) return
   window.dispatchEvent(new CustomEvent('cloudphone-open-tag-manager'))
 }
 
@@ -763,6 +765,7 @@ const initApp = () => {
   if (authStore.isLoggedIn && !isSharePage.value) {
     authStore.fetchMe()
     tagStore.load()
+    loadRemoteDeviceSettings().catch(err => console.warn(err.message))
     deviceStore.fetchDevices()
     fetchVersion()
     deviceStore.initSignaling()

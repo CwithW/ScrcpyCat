@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node ../../tools/frontend-licenses.mjs",
-    "test": "node --test --test-isolation=none src/utils/h264.test.js src/utils/terminalSession.test.js src/utils/webrtc.test.js src/utils/websocketAudio.test.js",
+    "test": "node --test --test-isolation=none src/utils/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -8,6 +8,10 @@ import (
 )
 
 func (s *Server) deviceByID(w http.ResponseWriter, r *http.Request) {
+	if strings.HasSuffix(r.URL.Path, "/settings") {
+		s.deviceSettings(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/devices/"), "/settings"))
+		return
+	}
 	if strings.HasSuffix(r.URL.Path, "/snapshot") {
 		s.deviceSnapshot(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/devices/"), "/snapshot"))
 		return

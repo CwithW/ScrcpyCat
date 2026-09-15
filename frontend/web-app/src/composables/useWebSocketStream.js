@@ -51,7 +51,7 @@ export function useWebSocketStream(deviceId, options = {}) {
   function requestAudio() {
     if (!options.audio || !audioPlayer || audioPlayer.closed) return
     clearTimeout(audioTimeout)
-    if (signaling.startAudioForwarding(options)) {
+    if (signaling.startAudioForwarding({ ...options, preview: false, bwe: false })) {
       audioTimeout = setTimeout(() => { audioError.value = '等待设备音频超时，请检查 Agent 并重试声音' }, 10000)
     }
   }
@@ -646,16 +646,11 @@ export function useWebSocketStream(deviceId, options = {}) {
     hasReceivedKeyFrame = false
     isFirstFrameRendered.value = false
 
-    // 获取期望的高清参数（默认 30fps / 1080p / 4Mbps）
-    const fps = options.max_fps || 30
-    const maxSize = options.max_size || 1080
     if (options.bitrate) {
       targetBitrateMbps.value = options.bitrate >= 10000 ? Math.round(options.bitrate / 100000) / 10 : options.bitrate
     } else if (options.preview_bitrate) {
       targetBitrateMbps.value = Math.round(options.preview_bitrate / 100000) / 10
     }
-    const bitrate = targetBitrateMbps.value || 4
-    const stayAwake = options.stay_awake !== false
 
     // 初始化解码器
     initDecoder('webcodecs')
@@ -666,7 +661,16 @@ export function useWebSocketStream(deviceId, options = {}) {
     })
 
     // 发送高清 start_preview 信令
-    deviceStore.sendPreviewControl('start_preview', deviceId, fps, maxSize, bitrate, stayAwake)
+    deviceStore.sendPreviewControl('start_preview', deviceId, {
+      ...options,
+      preview: false,
+      audio: !!options.audio,
+      bwe: false,
+      max_fps: options.max_fps ?? 0,
+      max_size: options.max_size ?? 0,
+      bitrate: Math.round(targetBitrateMbps.value * 1000000),
+      stay_awake: options.stay_awake !== false
+    })
 
     startStatsLoop()
     armConnectTimeout()

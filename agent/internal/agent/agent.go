@@ -162,7 +162,7 @@ func (c *client) connect(ctx context.Context) error {
 		return writer.writeJSON(map[string]any{"message_type": "file_message", "client_id": clientID, "payload": payload})
 	}, c.device())
 	defer files.Close()
-	webrtc := newMediaManager(writer, c.bridge, c.cameraBridge, terminals)
+	webrtc := newMediaManager(ctx, writer, c.bridge, c.cameraBridge, terminals)
 	defer webrtc.Close()
 	go c.reportTelemetry(ctx, writer, webrtc)
 	c.bridge.SetDeviceMessagePublisher(func(payload map[string]any) {
@@ -257,16 +257,16 @@ func (c *client) handleMessage(ctx context.Context, writer *lockedWriter, webrtc
 		}
 		return nil
 	case "stop_audio":
-		return webrtc.StopAudio(ctx, c.previewActive.Load())
+		return webrtc.StopAudio(ctx)
 	case "start_preview":
 		log.Printf("preview requested by %s", stringField(message, "client_id"))
 		options, err := parseStreamOptions(message, true)
 		if err != nil {
 			return c.streamError(writer, message, err)
 		}
-		options = webrtc.displayOptions(options)
+		c.setSnapshotInterval(message)
 		c.previewActive.Store(true)
-		if err := c.bridge.Start(ctx, options); err != nil {
+		if err := webrtc.StartPreview(ctx, options); err != nil {
 			c.previewActive.Store(false)
 			return c.streamError(writer, message, err)
 		}
@@ -274,16 +274,19 @@ func (c *client) handleMessage(ctx context.Context, writer *lockedWriter, webrtc
 	case "stop_preview":
 		log.Print("preview stopped")
 		c.previewActive.Store(false)
-		webrtc.StopIdle(false)
-		return nil
+		return webrtc.StopPreview(ctx)
 	case "client_disconnected":
 		clientID := stringField(message, "client_id")
 		terminals.CloseClient(clientID)
 		files.CloseClient(clientID)
 		webrtc.CloseSession(clientID)
-		webrtc.StopIdle(c.previewActive.Load())
+		webrtc.StopIdle()
 		return nil
 	case "forward":
+		if payload, ok := message["payload"].(map[string]any); ok && stringField(payload, "type") == "request-offer" {
+			settings, _ := payload["scrcpy_options"].(map[string]any)
+			c.setSnapshotInterval(settings)
+		}
 		if err := webrtc.HandleForward(ctx, message); err != nil {
 			return c.streamError(writer, message, err)
 		}
@@ -335,9 +338,15 @@ func (c *client) handleMessage(ctx context.Context, writer *lockedWriter, webrtc
 		}
 		return c.bridge.EnqueueControl(event)
 	case "inject_data":
+		if capability := injectionCapability(message); capability != "" {
+			return writer.writeJSON(map[string]any{"message_type": "capability_error", "client_id": stringField(message, "client_id"), "device_id": c.config.DeviceID, "capability": capability, "supported": false, "error": "Agent does not support " + capability})
+		}
 		event, _ := message["payload"].(map[string]any)
 		if event == nil {
 			return nil
+		}
+		if !browserControlAllowed(event) {
+			return c.streamError(writer, message, errors.New("unsupported injection event"))
 		}
 		if err := c.bridge.Start(ctx, streamOptions{Preview: true}); err != nil {
 			return err
@@ -345,6 +354,25 @@ func (c *client) handleMessage(ctx context.Context, writer *lockedWriter, webrtc
 		return c.bridge.EnqueueControl(event)
 	}
 	return nil
+}
+
+func injectionCapability(message map[string]any) string {
+	switch stringField(message, "channel") {
+	case "gps":
+		return "gps_injection"
+	case "sensor":
+		return "sensor_injection"
+	case "camera":
+		return "camera_injection"
+	}
+	payload, _ := message["payload"].(map[string]any)
+	switch stringField(payload, "type") {
+	case "gps":
+		return "gps_injection"
+	case "accel", "gyro", "light", "temp", "proximity", "hinge_angle":
+		return "sensor_injection"
+	}
+	return ""
 }
 
 func (c *client) streamError(writer *lockedWriter, message map[string]any, err error) error {

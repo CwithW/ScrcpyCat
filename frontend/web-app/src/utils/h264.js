@@ -14,7 +14,12 @@ export function parseAnnexB(buffer) {
   return units
 }
 
-// WASM 返回宏块对齐的 YUV 尺寸，需按 Baseline SPS 裁掉编码填充。
+export function h264CodecString(sps) {
+  if (!sps || sps.length < 4 || (sps[0] & 31) !== 7) return null
+  return 'avc1.' + [...sps.subarray(1, 4)].map(value => value.toString(16).padStart(2, '0')).join('')
+}
+
+// WASM 返回宏块对齐的 YUV 尺寸，需按 SPS 裁掉编码填充。
 export function readH264Crop(nalu) {
   if ((nalu[0] & 31) !== 7 || ![66, 77, 88].includes(nalu[1])) return null
   const bytes = []

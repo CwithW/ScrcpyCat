@@ -14,7 +14,7 @@ export function useWebRTC(deviceId, options = {}) {
   const audioMuted = ref(false)
   const audioError = ref(null)
   let audioFrameCallback = null
-  const cameraSupport = ref(true)
+  const cameraSupport = ref(false)
   const agentVersion = ref('unknown')
   const isWebCodecsActive = ref(false)
 
@@ -52,6 +52,7 @@ export function useWebRTC(deviceId, options = {}) {
   let cameraIntervalId = null
 
   function getOption(key, def) {
+    if (options[key] !== undefined) return options[key]
     try {
       const devStored = localStorage.getItem(`cloudphone_settings_${deviceId}`)
       if (devStored) {
@@ -200,6 +201,7 @@ export function useWebRTC(deviceId, options = {}) {
       case 'audio_error':
         audioError.value = msg.error || '设备音频不可用'
         break
+      case 'capability_error':
       case 'error':
         error.value = msg.error || 'Server error'
         status.value = 'error'
@@ -227,9 +229,9 @@ async function handleDeviceMessage(payload) {
     case 'offer': {
       if (options.signalingOnly) return
       debugLog('[WebRTC] Received offer, length:', payload.sdp.length)
-      cameraSupport.value = payload.camera_support !== false
+      cameraSupport.value = payload.camera_support === true
       if (!cameraSupport.value) {
-        debugWarn('[WebRTC] Device does not support camera injection (Camera HAL not found)')
+        debugWarn('[WebRTC] Agent does not support camera injection')
       }
       const peer = createPeerConnection()
       const filteredOfferSdp = filterSDPCandidates(payload.sdp)
@@ -243,11 +245,8 @@ async function handleDeviceMessage(payload) {
       }
       const answer = await peer.createAnswer()
       if (pc !== peer) return
-      // 保留既有带宽设置；异步协商只更新仍然活跃的连接。
-      let sdp = answer.sdp
-      sdp = sdp.replace(/m=video (.*)\r\n/g, `m=video $1\r\nb=AS:20000\r\n`)
-      sdp = sdp.replace(/a=fmtp:(102|96) (.*)\r\n/g, `a=fmtp:$1 $2;x-google-start-bitrate=20000000;x-google-max-bitrate=20000000\r\n`)
-      await peer.setLocalDescription(new RTCSessionDescription({ type: 'answer', sdp }))
+      // 编码码率与 BWE 上下限由 Agent 按连接参数控制。
+      await peer.setLocalDescription(answer)
       if (pc !== peer) return
       sendAnswer()
       status.value = 'connecting_webrtc'
