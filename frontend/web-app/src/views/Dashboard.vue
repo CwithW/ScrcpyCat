@@ -55,7 +55,7 @@
           </select>
         </div>
         <span class="chart-subtitle">
-          提示: 默认仅展示告警设备。点击下方矩阵方块可锁定/移除指定设备的趋势线。
+          提示: 默认展示全部在线设备。点击下方矩阵方块可筛选设备，取消全部选择后恢复展示全部在线设备。
         </span>
       </div>
       <div class="chart-wrapper">
@@ -339,20 +339,9 @@ function toggleDeviceSelection(deviceId) {
 function updateChart() {
   if (!chartInstance) return
 
-  let devicesToRender = []
-  if (selectedDeviceIds.value.size > 0) {
-    devicesToRender = onlineDevices.value.filter(d => selectedDeviceIds.value.has(d.id))
-  } else {
-    const warningDevs = onlineDevices.value.filter(d => {
-      const cls = getDeviceStatusClass(d)
-      return cls === 'status-red' || cls === 'status-yellow'
-    })
-    if (warningDevs.length > 0) {
-      devicesToRender = warningDevs.slice(0, 3)
-    } else {
-      devicesToRender = onlineDevices.value.slice(0, 3)
-    }
-  }
+  const devicesToRender = selectedDeviceIds.value.size > 0
+    ? onlineDevices.value.filter(d => selectedDeviceIds.value.has(d.id))
+    : onlineDevices.value
 
   const series = []
   let globalTimestamps = []
